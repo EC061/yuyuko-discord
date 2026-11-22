@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8" />
+  <style>{{ base_css | safe }}</style>
+</head>
+<body>
+  <div class="card-root">
+    <div class="header">
+      <div class="header-left">
+        <div class="title-row">
+          <span class="player-name">{{ ship.tier | roman }} {{ ship_name }}</span>
+          <span class="badge">{{ t("realms." + realm) }}</span>
+          <span class="badge">{{ t("cards.ship_rank_global") if is_global else t("cards.ship_rank_local") }}</span>
+        </div>
+        <div class="subtitle">{{ t("cards.ship_rank_title") }}</div>
+      </div>
+      {% if ship.icon_medium %}
+      <img class="ship-thumb" style="width:128px;height:74px;" src="{{ ship.icon_medium }}" alt="" />
+      {% endif %}
+    </div>
+
+    <table class="stats-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>{{ t("cards.player") }}</th>
+          <th class="num">{{ t("cards.battles") }}</th>
+          <th class="num">{{ t("cards.win_rate") }}</th>
+          <th class="num">{{ t("cards.avg_damage") }}</th>
+          <th class="num">{{ t("cards.avg_frags") }}</th>
+          <th class="num">{{ t("cards.pr") }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+        <tr>
+          <td><strong>{{ e.rank }}</strong></td>
+          <td>
+            {% if e.clan_tag %}<span style="color:#60a5fa;font-weight:700;">[{{ e.clan_tag }}]</span> {% endif %}
+            <strong>{{ e.nickname }}</strong>
+          </td>
+          <td class="num">{{ e.battles | intcomma }}</td>
+          <td class="num" style="color:{{ e.win_rate_color }};font-weight:700;">{{ e.win_rate }}%</td>
+          <td class="num">{{ e.avg_damage | intcomma }}</td>
+          <td class="num">{{ e.avg_frags }}</td>
+          <td class="num">
+            {% if e.pr > 0 %}
+            <span class="pr-pill" style="background:{{ e.pr_color }};">{{ e.pr }}</span>
+            {% else %}
+            -
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="footer">
+      <span>{{ t("cards.footer_generated") }}</span>
+      <span>{{ realm | upper }} · Ship #{{ ship.ship_id }}</span>
+    </div>
+  </div>
+</body>
+</html>

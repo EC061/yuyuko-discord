@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8" />
+  <style>{{ base_css | safe }}</style>
+</head>
+<body>
+  {% set rec = records[0] %}
+  <div class="card-root">
+    <div class="header">
+      <div class="header-left">
+        <div class="title-row">
+          {% if rec.clan_tag %}<span class="clan-tag">[{{ rec.clan_tag }}]</span>{% endif %}
+          <span class="player-name">{{ rec.nickname }}</span>
+          <span class="badge">{{ t("realms." + group.realm) }}</span>
+          <span class="badge">{{ t("battle_types." + group.battle_type) }}</span>
+        </div>
+        <div class="subtitle">
+          {% if rec.battles_delta > 1 %}
+            {{ t("cards.match_multi_title", count=rec.battles_delta) }}
+          {% else %}
+            {{ t("cards.match_solo_title") }}
+          {% endif %}
+          · {{ battle_time_str }}
+        </div>
+      </div>
+      <div>
+        {% if group.is_win %}
+          <span class="badge badge-victory">{{ t("cards.victory") }}</span>
+        {% else %}
+          <span class="badge badge-defeat">{{ t("cards.defeat") }}</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="pr-banner" style="background: linear-gradient(90deg, {{ rec.pr_color }}, rgba(15,23,42,0.85));">
+      <div class="pr-banner-left">
+        <span class="pr-score">{{ rec.pr_int }}</span>
+        <span class="pr-label">{{ t("pr_ratings." + rec.pr_tier_key) }}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="text-align:right;">
+          <div style="font-size:20px;font-weight:800;">{{ rec.ship_tier | roman }} {{ rec.ship_name }}</div>
+          <div class="subtitle" style="color:rgba(255,255,255,0.8);">{{ t("ship_types." + rec.ship_type) if rec.ship_type else "" }}</div>
+        </div>
+        {% if rec.ship_icon %}
+        <img class="ship-thumb" src="{{ rec.ship_icon }}" alt="" />
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="kpi-grid kpi-grid-5">
+      <div class="kpi-box">
+        <div class="kpi-title">{{ t("cards.damage") }}</div>
+        <div class="kpi-val">{{ rec.damage_delta | intcomma }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">{{ t("cards.frags") }}</div>
+        <div class="kpi-val">{{ rec.frags_delta }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">{{ t("cards.xp") }}</div>
+        <div class="kpi-val">{{ rec.xp_delta | intcomma }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">{{ t("cards.spotting") }}</div>
+        <div class="kpi-val">{{ rec.spotting_delta | intcomma }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">{{ t("cards.hit_ratio") }}</div>
+        <div class="kpi-val">{{ rec.hit_ratio }}%</div>
+        <div class="kpi-sub">{{ t("cards.planes") }} {{ rec.planes_delta }}</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>{{ t("cards.footer_generated") }}</span>
+      <span>Match #{{ group.id }} · {{ group.realm | upper }}</span>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,48 @@
+[project]
+name = "wows-gamevox-bot"
+version = "0.1.0"
+description = "Self-hosted World of Warships stats & auto-posting bot for GameVox (NA/EU/ASIA) with SQLite WAL, Honker queue, and Playwright rendering."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "discord.py>=2.4.0",
+    "honker>=0.5.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.4",
+    "loguru>=0.7.2",
+    "pillow>=10.4.0",
+    "playwright>=1.48.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+]
+
+[project.scripts]
+wows-bot = "wows_bot.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wows_bot"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "respx>=0.21.1",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

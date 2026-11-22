@@ -1,0 +1,25 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Local secrets & runtime data
+.env
+.env.local
+.env.prod
+data/
+*.db
+*.db-wal
+*.db-shm
+*.bak
+
+# Tooling
+.tgrep/
+.DS_Store
+.vscode/
+.idea/

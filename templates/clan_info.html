@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8" />
+  <style>{{ base_css | safe }}</style>
+</head>
+<body>
+  <div class="card-root">
+    <div class="header">
+      <div class="header-left">
+        <div class="title-row">
+          <span class="clan-tag">[{{ view.tag }}]</span>
+          <span class="player-name">{{ view.name }}</span>
+          <span class="badge">{{ t("realms." + view.realm) }}</span>
+        </div>
+        <div class="subtitle">{{ t("cards.clan_title") }} · {{ view.description or "-" }}</div>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi-box">
+        <div class="kpi-title">{{ t("cards.clan_members") }}</div>
+        <div class="kpi-val">{{ view.members_count }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">Leader</div>
+        <div class="kpi-val" style="font-size:20px;">{{ view.leader_name }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">Clan ID</div>
+        <div class="kpi-val" style="font-size:20px;">{{ view.clan_id }}</div>
+      </div>
+      <div class="kpi-box">
+        <div class="kpi-title">Created</div>
+        <div class="kpi-val" style="font-size:18px;">{{ view.created_at_str }}</div>
+      </div>
+    </div>
+
+    {% if view.members %}
+    <table class="stats-table">
+      <thead>
+        <tr>
+          <th>{{ t("cards.player") }}</th>
+          <th>Role</th>
+          <th class="num">Joined</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in view.members[:15] %}
+        <tr>
+          <td><strong>{{ m.account_name }}</strong></td>
+          <td>{{ m.role }}</td>
+          <td class="num">{{ m.joined_at_str }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <div class="footer">
+      <span>{{ t("cards.footer_generated") }}</span>
+      <span>{{ view.realm | upper }} · Clan #{{ view.clan_id }}</span>
+    </div>
+  </div>
+</body>
+</html>
