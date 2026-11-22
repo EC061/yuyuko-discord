@@ -226,6 +226,11 @@ class DatabaseManager:
         if self._db is not None:
             return self
 
+        # Check schema version and take WAL-consistent backup BEFORE honker.open()!
+        # Opening and closing Python's libsqlite3 on the same file AFTER honker.open()
+        # drops honker's POSIX fcntl WAL-index locks on Linux (causing disk I/O errors).
+        self._pre_open_backup_if_needed()
+
         self._db = honker.open(
             str(self.db_path),
             max_readers=8,
@@ -246,19 +251,25 @@ class DatabaseManager:
         self.render_queue = self._db.queue("wows_render", visibility_timeout_s=180, max_attempts=5)
         return self
 
-    def _backup_wal_consistent(self, current_version: int) -> None:
-        """Create a WAL-consistent online SQLite backup before running schema migrations."""
+    def _pre_open_backup_if_needed(self) -> None:
+        """Take a WAL-consistent online SQLite backup BEFORE honker opens the DB."""
         if not self.db_path.exists():
             return
-        backup_path = self.db_path.with_suffix(f".db.v{current_version}.{int(time.time())}.bak")
-        src = sqlite3.connect(str(self.db_path))
-        dst = sqlite3.connect(str(backup_path))
+        src = sqlite3.connect(str(self.db_path), timeout=5.0)
         try:
-            src.backup(dst)
+            row = src.execute("PRAGMA user_version").fetchone()
+            current = int(row[0]) if row else 0
+            if current <= 0 or current >= SCHEMA_VERSION:
+                return
+            backup_path = self.db_path.with_suffix(f".db.v{current}.{int(time.time())}.bak")
+            dst = sqlite3.connect(str(backup_path))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+            logger.info("Created WAL-consistent SQLite backup at {}", backup_path)
         finally:
-            dst.close()
             src.close()
-        logger.info("Created WAL-consistent SQLite backup at {}", backup_path)
 
     def _run_migrations(self) -> None:
         rows = self.db.query("PRAGMA user_version")
@@ -269,9 +280,6 @@ class DatabaseManager:
             )
         if current == SCHEMA_VERSION:
             return
-
-        if current > 0:
-            self._backup_wal_consistent(current)
 
         for target_ver in range(current + 1, SCHEMA_VERSION + 1):
             stmts = MIGRATIONS[target_ver]
