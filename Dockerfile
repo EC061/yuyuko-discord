@@ -10,10 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install CJK fonts for crisp Chinese card rendering + Playwright runtime libs
+# Install CJK fonts for crisp Chinese card rendering + libatomic1 for Playwright driver
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    libatomic1 \
     fonts-noto-cjk \
     fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
@@ -26,7 +27,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
 RUN uv sync --frozen --no-dev \
-    && uv run playwright install --with-deps chromium \
+    && .venv/bin/playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 
 # Copy runtime assets (templates + locales)
