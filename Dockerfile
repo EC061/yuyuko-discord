@@ -31,6 +31,7 @@ RUN uv sync --frozen --no-dev --no-install-project \
 COPY src ./src
 COPY locales ./locales
 COPY templates ./templates
+COPY assets ./assets
 RUN uv sync --frozen --no-dev
 
 # Run as non-root user

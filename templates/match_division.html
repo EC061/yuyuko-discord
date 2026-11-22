@@ -2,86 +2,117 @@
 <html lang="{{ lang }}">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
   <style>{{ base_css | safe }}</style>
 </head>
 <body>
   <div class="card-root">
-    <div class="header">
-      <div class="header-left">
-        <div class="title-row">
-          <span class="player-name">{{ t("cards.match_division_title") }}</span>
-          <span class="badge">{{ t("realms." + group.realm) }}</span>
-          <span class="badge">{{ t("battle_types." + group.battle_type) }}</span>
-          <span class="badge">{{ t("cards.division_members", count=records | length) }}</span>
+    <div class="top-stripe {% if group.is_win %}top-stripe-victory{% else %}top-stripe-defeat{% endif %}"></div>
+    <div class="card-inner">
+      <div class="masthead">
+        <div class="identity-block">
+          <div class="brand-eyebrow">
+            <span class="brand-dot"></span>
+            <span>{{ t("cards.brand_name") }} · {{ t("cards.match_division_title") }}</span>
+          </div>
+          <div class="title-row">
+            <span class="player-name">{{ t("cards.division_members", count=records | length) }}</span>
+            <span class="realm-pill">{{ t("realms." + group.realm) }}</span>
+            <span class="mode-pill">{{ t("battle_types." + group.battle_type) }}</span>
+          </div>
+          <div class="meta-line">{{ battle_time_str }} · Match Group #{{ group.id }}</div>
         </div>
-        <div class="subtitle">{{ battle_time_str }} · Match Group #{{ group.id }}</div>
-      </div>
-      <div>
-        {% if group.is_win %}
-          <span class="badge badge-victory">{{ t("cards.victory") }}</span>
-        {% else %}
-          <span class="badge badge-defeat">{{ t("cards.defeat") }}</span>
-        {% endif %}
-      </div>
-    </div>
-
-    <div class="pr-banner" style="background: linear-gradient(90deg, {{ division_totals.avg_pr_color }}, rgba(15,23,42,0.85));">
-      <div class="pr-banner-left">
-        <span class="pr-score">{{ division_totals.avg_pr }}</span>
-        <span class="pr-label">{{ t("cards.avg_pr") }} · {{ t("pr_ratings." + division_totals.avg_pr_tier_key) }}</span>
-      </div>
-      <div style="display:flex;gap:24px;font-size:15px;font-weight:700;">
-        <span>{{ t("cards.total_damage") }}: {{ division_totals.damage | intcomma }}</span>
-        <span>{{ t("cards.total_frags") }}: {{ division_totals.frags }}</span>
-      </div>
-    </div>
-
-    <div class="division-grid">
-      {% for rec in records %}
-      <div class="division-member">
-        <div class="member-identity">
-          {% if rec.ship_icon %}
-          <img class="ship-thumb" src="{{ rec.ship_icon }}" alt="" />
+        <div style="display:flex;align-items:center;gap:12px;">
+          {% if group.is_win %}
+            <span class="result-stamp result-victory">{{ t("cards.victory") }}</span>
+          {% else %}
+            <span class="result-stamp result-defeat">{{ t("cards.defeat") }}</span>
           {% endif %}
-          <div>
-            <div style="font-size:18px;font-weight:800;color:#ffffff;">
-              {% if rec.clan_tag %}<span style="color:#60a5fa;">[{{ rec.clan_tag }}]</span> {% endif %}{{ rec.nickname }}
+          <div class="police-crest" style="padding:7px 12px 7px 9px;">
+            {% if brand_icon_uri %}
+              <img class="crest-badge-img-sm" src="{{ brand_icon_uri }}" alt="" />
+            {% else %}
+              <svg width="28" height="28" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M18 3L31 8V17.5C31 25.3 25.5 31.6 18 33.5C10.5 31.6 5 25.3 5 17.5V8L18 3Z" fill="#1E3A8A" stroke="#2563EB" stroke-width="2"/>
+                <path d="M18 11.5L19.9 15.4L24.2 16L21.1 19L21.8 23.3L18 21.3L14.2 23.3L14.9 19L11.8 16L16.1 15.4L18 11.5Z" fill="#FACC15"/>
+              </svg>
+            {% endif %}
+            <div class="crest-text">
+              <span class="crest-title" style="font-size:16px;">{{ t("cards.brand_name") }}</span>
+              <span class="crest-sub" style="font-size:9px;">{{ t("cards.brand_tagline") }}</span>
             </div>
-            <div style="font-size:14px;color:#93c5fd;margin-top:3px;font-weight:600;">
-              {{ rec.ship_tier | roman }} {{ rec.ship_name }}
-            </div>
-          </div>
-        </div>
-        <div class="member-metrics">
-          <div class="mini-metric">
-            <div class="k">{{ t("cards.damage") }}</div>
-            <div class="v">{{ rec.damage_delta | intcomma }}</div>
-          </div>
-          <div class="mini-metric">
-            <div class="k">{{ t("cards.frags") }}</div>
-            <div class="v">{{ rec.frags_delta }}</div>
-          </div>
-          <div class="mini-metric">
-            <div class="k">{{ t("cards.xp") }}</div>
-            <div class="v">{{ rec.xp_delta | intcomma }}</div>
-          </div>
-          <div class="mini-metric">
-            <div class="k">{{ t("cards.spotting") }}</div>
-            <div class="v">{{ rec.spotting_delta | intcomma }}</div>
-          </div>
-          <div class="mini-metric" style="border-left: 3px solid {{ rec.pr_color }};">
-            <div class="k">{{ t("cards.pr") }}</div>
-            <div class="v" style="color: {{ rec.pr_color }};">{{ rec.pr_int }}</div>
           </div>
         </div>
       </div>
-      {% endfor %}
-    </div>
 
-    <div class="footer">
-      <span>{{ t("cards.footer_generated") }}</span>
-      <span>Division Deduplicated · {{ records | length }} Players · {{ group.realm | upper }}</span>
+      <div class="pr-hero" style="--pr-color: {{ division_totals.avg_pr_color }};">
+        <div class="pr-hero-left">
+          <div class="pr-score-big">{{ division_totals.avg_pr }}</div>
+          <div class="pr-meta">
+            <span class="pr-tier-badge">{{ t("cards.avg_pr") }} · {{ t("pr_ratings." + division_totals.avg_pr_tier_key) }}</span>
+            <span class="pr-next-hint">{{ t("cards.division_summary") }}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:24px;">
+          <div style="text-align:right;">
+            <div class="kpi-label">{{ t("cards.total_damage") }}</div>
+            <div style="font-size:26px;font-weight:900;color:#0f172a;font-variant-numeric:tabular-nums;">{{ division_totals.damage | intcomma }}</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="kpi-label">{{ t("cards.total_frags") }}</div>
+            <div style="font-size:26px;font-weight:900;color:#0f172a;font-variant-numeric:tabular-nums;">{{ division_totals.frags }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="division-grid">
+        {% for rec in records %}
+        <div class="division-member">
+          <div class="member-identity">
+            {% if rec.ship_icon %}
+            <div class="ship-thumb-box" style="width:94px;height:54px;">
+              <img class="ship-thumb" src="{{ rec.ship_icon }}" alt="" />
+            </div>
+            {% endif %}
+            <div>
+              <div style="font-size:17px;font-weight:900;color:#0f172a;">
+                {% if rec.clan_tag %}<span style="color:#1d4ed8;">[{{ rec.clan_tag }}]</span> {% endif %}{{ rec.nickname }}
+              </div>
+              <div style="font-size:13px;color:#475569;margin-top:4px;font-weight:700;">
+                <span class="tier-tag">{{ rec.ship_tier | roman }}</span>{{ rec.ship_name }}
+              </div>
+            </div>
+          </div>
+          <div class="member-metrics">
+            <div class="mini-metric">
+              <div class="k">{{ t("cards.damage") }}</div>
+              <div class="v">{{ rec.damage_delta | intcomma }}</div>
+            </div>
+            <div class="mini-metric">
+              <div class="k">{{ t("cards.frags") }}</div>
+              <div class="v">{{ rec.frags_delta }}</div>
+            </div>
+            <div class="mini-metric">
+              <div class="k">{{ t("cards.xp") }}</div>
+              <div class="v">{{ rec.xp_delta | intcomma }}</div>
+            </div>
+            <div class="mini-metric">
+              <div class="k">{{ t("cards.spotting") }}</div>
+              <div class="v">{{ rec.spotting_delta | intcomma }}</div>
+            </div>
+            <div class="mini-metric" style="border-left: 4px solid {{ rec.pr_color }};">
+              <div class="k">{{ t("cards.pr") }}</div>
+              <div class="v" style="color: {{ rec.pr_color }};">{{ rec.pr_int }}</div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="footer">
+        <span class="footer-brand">{{ t("cards.brand_name") }} · {{ t("cards.footer_generated") }}</span>
+        <span>Division Combined · {{ records | length }} Players · {{ group.realm | upper }}</span>
+      </div>
     </div>
   </div>
 </body>

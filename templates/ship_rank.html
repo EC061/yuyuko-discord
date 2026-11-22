@@ -2,64 +2,85 @@
 <html lang="{{ lang }}">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
   <style>{{ base_css | safe }}</style>
 </head>
 <body>
   <div class="card-root">
-    <div class="header">
-      <div class="header-left">
-        <div class="title-row">
-          <span class="player-name">{{ ship.tier | roman }} {{ ship_name }}</span>
-          <span class="badge">{{ t("realms." + realm) }}</span>
-          <span class="badge">{{ t("cards.ship_rank_global") if is_global else t("cards.ship_rank_local") }}</span>
+    <div class="top-stripe"></div>
+    <div class="card-inner">
+      <div class="masthead">
+        <div class="identity-block">
+          <div class="brand-eyebrow">
+            <span class="brand-dot"></span>
+            <span>{{ t("cards.brand_name") }} · {{ t("cards.ship_rank_title") }}</span>
+          </div>
+          <div class="title-row">
+            <span class="player-name"><span class="tier-tag" style="font-size:18px;vertical-align:middle;">{{ ship.tier | roman }}</span>{{ ship_name }}</span>
+            <span class="realm-pill">{{ t("realms." + realm) }}</span>
+            <span class="mode-pill">{{ t("cards.ship_rank_global") if is_global else t("cards.ship_rank_local") }}</span>
+          </div>
         </div>
-        <div class="subtitle">{{ t("cards.ship_rank_title") }}</div>
-      </div>
-      {% if ship.icon_medium %}
-      <img class="ship-thumb" style="width:128px;height:74px;" src="{{ ship.icon_medium }}" alt="" />
-      {% endif %}
-    </div>
-
-    <table class="stats-table">
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>{{ t("cards.player") }}</th>
-          <th class="num">{{ t("cards.battles") }}</th>
-          <th class="num">{{ t("cards.win_rate") }}</th>
-          <th class="num">{{ t("cards.avg_damage") }}</th>
-          <th class="num">{{ t("cards.avg_frags") }}</th>
-          <th class="num">{{ t("cards.pr") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for e in entries %}
-        <tr>
-          <td><strong>{{ e.rank }}</strong></td>
-          <td>
-            {% if e.clan_tag %}<span style="color:#60a5fa;font-weight:700;">[{{ e.clan_tag }}]</span> {% endif %}
-            <strong>{{ e.nickname }}</strong>
-          </td>
-          <td class="num">{{ e.battles | intcomma }}</td>
-          <td class="num" style="color:{{ e.win_rate_color }};font-weight:700;">{{ e.win_rate }}%</td>
-          <td class="num">{{ e.avg_damage | intcomma }}</td>
-          <td class="num">{{ e.avg_frags }}</td>
-          <td class="num">
-            {% if e.pr > 0 %}
-            <span class="pr-pill" style="background:{{ e.pr_color }};">{{ e.pr }}</span>
-            {% else %}
-            -
+        <div style="display:flex;align-items:center;gap:12px;">
+          {% if ship.icon_medium %}
+          <div class="ship-thumb-box" style="width:120px;height:62px;">
+            <img class="ship-thumb" src="{{ ship.icon_medium }}" alt="" />
+          </div>
+          {% endif %}
+          <div class="police-crest" style="padding:7px 12px 7px 9px;">
+            {% if brand_icon_uri %}
+              <img class="crest-badge-img-sm" src="{{ brand_icon_uri }}" alt="" />
             {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+            <div class="crest-text">
+              <span class="crest-title" style="font-size:16px;">{{ t("cards.brand_name") }}</span>
+              <span class="crest-sub" style="font-size:9px;">{{ t("cards.brand_tagline") }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
-    <div class="footer">
-      <span>{{ t("cards.footer_generated") }}</span>
-      <span>{{ realm | upper }} · Ship #{{ ship.ship_id }}</span>
+      <div class="panel">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>{{ t("cards.player") }}</th>
+              <th class="num">{{ t("cards.battles") }}</th>
+              <th class="num">{{ t("cards.win_rate") }}</th>
+              <th class="num">{{ t("cards.avg_damage") }}</th>
+              <th class="num">{{ t("cards.avg_frags") }}</th>
+              <th class="num">{{ t("cards.pr") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in entries %}
+            <tr>
+              <td><strong>{{ e.rank }}</strong></td>
+              <td>
+                {% if e.clan_tag %}<span style="color:#1d4ed8;font-weight:800;">[{{ e.clan_tag }}]</span> {% endif %}
+                <strong>{{ e.nickname }}</strong>
+              </td>
+              <td class="num">{{ e.battles | intcomma }}</td>
+              <td class="num" style="color:{{ e.win_rate_color }};font-weight:800;">{{ e.win_rate }}%</td>
+              <td class="num">{{ e.avg_damage | intcomma }}</td>
+              <td class="num">{{ e.avg_frags }}</td>
+              <td class="num">
+                {% if e.pr > 0 %}
+                <span class="pr-chip" style="background:{{ e.pr_color }};">{{ e.pr }}</span>
+                {% else %}
+                -
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="footer">
+        <span class="footer-brand">{{ t("cards.brand_name") }} · {{ t("cards.footer_generated") }}</span>
+        <span>{{ realm | upper }} · Ship #{{ ship.ship_id }}</span>
+      </div>
     </div>
   </div>
 </body>

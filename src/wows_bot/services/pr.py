@@ -23,15 +23,15 @@ class PRRating:
 
 
 PR_THRESHOLDS: tuple[tuple[int, str, str], ...] = (
-    (2450, "super_unicum", "#a00dc5"),
-    (2100, "unicum", "#d042f3"),
-    (1750, "great", "#02c9b3"),
-    (1550, "very_good", "#318000"),
-    (1350, "good", "#44b300"),
-    (1100, "average", "#ffc71f"),
-    (750, "below_avg", "#fe7903"),
-    (1, "bad", "#fe0e00"),
-    (0, "unrated", "#8c96a6"),
+    (2450, "super_unicum", "#8b0dc5"),
+    (2100, "unicum", "#b832e6"),
+    (1750, "great", "#00a699"),
+    (1550, "very_good", "#2b7a0b"),
+    (1350, "good", "#42a800"),
+    (1100, "average", "#d48b00"),
+    (750, "below_avg", "#ea580c"),
+    (1, "bad", "#dc2626"),
+    (0, "unrated", "#64748b"),
 )
 
 
@@ -48,20 +48,20 @@ def classify_pr(pr_value: float) -> PRRating:
 
 def win_rate_color(win_rate_pct: float) -> str:
     if win_rate_pct >= 65:
-        return "#a00dc5"
+        return "#8b0dc5"
     if win_rate_pct >= 60:
-        return "#d042f3"
+        return "#b832e6"
     if win_rate_pct >= 56:
-        return "#02c9b3"
+        return "#00a699"
     if win_rate_pct >= 54:
-        return "#318000"
+        return "#2b7a0b"
     if win_rate_pct >= 52:
-        return "#44b300"
+        return "#42a800"
     if win_rate_pct >= 49:
-        return "#ffc71f"
+        return "#d48b00"
     if win_rate_pct >= 47:
-        return "#fe7903"
-    return "#fe0e00"
+        return "#ea580c"
+    return "#dc2626"
 
 
 def calculate_pr_single_ship(

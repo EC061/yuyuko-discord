@@ -2,126 +2,211 @@
 <html lang="{{ lang }}">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
   <style>{{ base_css | safe }}</style>
 </head>
 <body>
   <div class="card-root">
-    <div class="header">
-      <div class="header-left">
-        <div class="title-row">
-          {% if view.clan_tag %}<span class="clan-tag">[{{ view.clan_tag }}]</span>{% endif %}
-          <span class="player-name">{{ view.nickname }}</span>
-          <span class="badge">{{ t("realms." + view.realm) }}</span>
+    <div class="top-stripe"></div>
+    <div class="card-inner">
+      <div class="masthead">
+        <div class="identity-block">
+          <div class="brand-eyebrow">
+            <span class="brand-dot"></span>
+            <span>{{ t("cards.brand_name") }} · {{ t("cards.overall_title") }}</span>
+          </div>
+          <div class="title-row">
+            {% if view.clan_tag %}<span class="clan-tag">[{{ view.clan_tag }}]</span>{% endif %}
+            <span class="player-name">{{ view.nickname }}</span>
+            <span class="realm-pill">{{ t("realms." + view.realm) }}</span>
+          </div>
+          <div class="meta-line">AID {{ view.account_id }} · {{ view.last_battle_str }}</div>
         </div>
-        <div class="subtitle">{{ t("cards.overall_title") }} · AID {{ view.account_id }} · {{ view.last_battle_str }}</div>
+        <div class="police-crest">
+          {% if brand_icon_uri %}
+            <img class="crest-badge-img" src="{{ brand_icon_uri }}" alt="" />
+          {% else %}
+            <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M18 3L31 8V17.5C31 25.3 25.5 31.6 18 33.5C10.5 31.6 5 25.3 5 17.5V8L18 3Z" fill="#1E3A8A" stroke="#2563EB" stroke-width="2"/>
+              <path d="M18 11.5L19.9 15.4L24.2 16L21.1 19L21.8 23.3L18 21.3L14.2 23.3L14.9 19L11.8 16L16.1 15.4L18 11.5Z" fill="#FACC15"/>
+            </svg>
+          {% endif %}
+          <div class="crest-text">
+            <span class="crest-title">{{ t("cards.brand_name") }}</span>
+            <span class="crest-sub">{{ t("cards.brand_tagline") }}</span>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <div class="pr-banner" style="background: linear-gradient(90deg, {{ view.pvp.pr_color }}, rgba(15,23,42,0.85));">
-      <div class="pr-banner-left">
-        <span class="pr-score">{{ view.pvp.pr }}</span>
-        <span class="pr-label">{{ t("pr_ratings." + view.pvp.pr_tier_key) }}</span>
+      {% set pr_val = view.pvp.pr %}
+      <div class="pr-hero" style="--pr-color: {{ view.pvp.pr_color }};">
+        <div class="pr-hero-left">
+          <div class="pr-score-big">{{ pr_val }}</div>
+          <div class="pr-meta">
+            <span class="pr-tier-badge">{{ t("pr_ratings." + view.pvp.pr_tier_key) }}</span>
+            <span class="pr-next-hint">
+              {% if view.pvp.pr_next > 0 %}
+                {{ t("cards.pr_next_gap", gap=view.pvp.pr_next) }}
+              {% else %}
+                {{ t("cards.pr_max_tier") }}
+              {% endif %}
+            </span>
+          </div>
+        </div>
+        <div class="pr-scale-wrap">
+          <div class="pr-scale-caption">{{ t("cards.pr") }} · {{ t("battle_types.pvp") }}</div>
+          <div class="pr-scale-bar">
+            <div class="pr-seg {% if pr_val >= 1 %}active{% endif %}" style="background:#dc2626;"></div>
+            <div class="pr-seg {% if pr_val >= 750 %}active{% endif %}" style="background:#ea580c;"></div>
+            <div class="pr-seg {% if pr_val >= 1100 %}active{% endif %}" style="background:#d48b00;"></div>
+            <div class="pr-seg {% if pr_val >= 1350 %}active{% endif %}" style="background:#42a800;"></div>
+            <div class="pr-seg {% if pr_val >= 1550 %}active{% endif %}" style="background:#2b7a0b;"></div>
+            <div class="pr-seg {% if pr_val >= 1750 %}active{% endif %}" style="background:#00a699;"></div>
+            <div class="pr-seg {% if pr_val >= 2100 %}active{% endif %}" style="background:#b832e6;"></div>
+            <div class="pr-seg {% if pr_val >= 2450 %}active{% endif %}" style="background:#8b0dc5;"></div>
+          </div>
+        </div>
       </div>
-      <div class="subtitle" style="color: rgba(255,255,255,0.85);">
-        {{ t("cards.pr") }} · {{ t("battle_types.pvp") }}
-      </div>
-    </div>
 
-    <div class="kpi-grid">
-      <div class="kpi-box">
-        <div class="kpi-title">{{ t("cards.battles") }}</div>
-        <div class="kpi-val">{{ view.pvp.battles | intcomma }}</div>
-        <div class="kpi-sub">{{ t("cards.survival_rate") }} {{ view.pvp.survival_rate }}%</div>
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">{{ t("cards.battles") }}</div>
+          <div class="kpi-value">{{ view.pvp.battles | intcomma }}</div>
+          <div class="kpi-foot">{{ t("cards.survival_rate") }} {{ view.pvp.survival_rate }}%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">{{ t("cards.win_rate") }}</div>
+          <div class="kpi-value" style="color: {{ view.pvp.win_rate_color }};">{{ view.pvp.win_rate }}%</div>
+          <div class="kpi-foot">{{ t("cards.avg_xp") }} {{ view.pvp.avg_xp | intcomma }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">{{ t("cards.avg_damage") }}</div>
+          <div class="kpi-value">{{ view.pvp.avg_damage | intcomma }}</div>
+          <div class="kpi-foot">{{ t("cards.hit_ratio") }} {{ view.pvp.hit_ratio }}%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">{{ t("cards.avg_frags") }} / {{ t("cards.kd") }}</div>
+          <div class="kpi-value">{{ view.pvp.avg_frags }} <span style="font-size:16px;color:#64748b;font-weight:700;">({{ view.pvp.kd }})</span></div>
+          <div class="kpi-foot">{{ t("cards.planes") }} {{ view.pvp.avg_planes }}</div>
+        </div>
       </div>
-      <div class="kpi-box">
-        <div class="kpi-title">{{ t("cards.win_rate") }}</div>
-        <div class="kpi-val" style="color: {{ view.pvp.win_rate_color }};">{{ view.pvp.win_rate }}%</div>
-        <div class="kpi-sub">{{ t("cards.avg_xp") }} {{ view.pvp.avg_xp | intcomma }}</div>
-      </div>
-      <div class="kpi-box">
-        <div class="kpi-title">{{ t("cards.avg_damage") }}</div>
-        <div class="kpi-val">{{ view.pvp.avg_damage | intcomma }}</div>
-        <div class="kpi-sub">{{ t("cards.hit_ratio") }} {{ view.pvp.hit_ratio }}%</div>
-      </div>
-      <div class="kpi-box">
-        <div class="kpi-title">{{ t("cards.avg_frags") }} / {{ t("cards.kd") }}</div>
-        <div class="kpi-val">{{ view.pvp.avg_frags }} <span style="font-size:16px;color:#8fa3bf;">({{ view.pvp.kd }})</span></div>
-        <div class="kpi-sub">{{ t("cards.planes") }} {{ view.pvp.avg_planes }}</div>
-      </div>
-    </div>
 
-    <div class="section-title">{{ t("cards.mode") }}</div>
-    <table class="stats-table">
-      <thead>
-        <tr>
-          <th>{{ t("cards.mode") }}</th>
-          <th class="num">{{ t("cards.battles") }}</th>
-          <th class="num">{{ t("cards.win_rate") }}</th>
-          <th class="num">{{ t("cards.avg_damage") }}</th>
-          <th class="num">{{ t("cards.avg_frags") }}</th>
-          <th class="num">{{ t("cards.avg_xp") }}</th>
-          <th class="num">{{ t("cards.pr") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for key, m in view.modes.items() %}
-        {% if m.battles > 0 %}
-        <tr>
-          <td><strong>{{ t("battle_types." + key) }}</strong></td>
-          <td class="num">{{ m.battles | intcomma }}</td>
-          <td class="num" style="color:{{ m.win_rate_color }};font-weight:700;">{{ m.win_rate }}%</td>
-          <td class="num">{{ m.avg_damage | intcomma }}</td>
-          <td class="num">{{ m.avg_frags }}</td>
-          <td class="num">{{ m.avg_xp | intcomma }}</td>
-          <td class="num"><span class="pr-pill" style="background:{{ m.pr_color }};">{{ m.pr }}</span></td>
-        </tr>
-        {% endif %}
-        {% endfor %}
-      </tbody>
-    </table>
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">{{ t("cards.mode") }}</span>
+            <span class="panel-sub">MODES</span>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>{{ t("cards.mode") }}</th>
+                <th class="num">{{ t("cards.battles") }}</th>
+                <th class="num">{{ t("cards.win_rate") }}</th>
+                <th class="num">{{ t("cards.avg_damage") }}</th>
+                <th class="num">{{ t("cards.avg_frags") }}</th>
+                <th class="num">{{ t("cards.pr") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for key, m in view.modes.items() %}
+              {% if m.battles > 0 %}
+              <tr>
+                <td><strong>{{ t("battle_types." + key) }}</strong></td>
+                <td class="num">{{ m.battles | intcomma }}</td>
+                <td class="num" style="color:{{ m.win_rate_color }};font-weight:800;">{{ m.win_rate }}%</td>
+                <td class="num">{{ m.avg_damage | intcomma }}</td>
+                <td class="num">{{ m.avg_frags }}</td>
+                <td class="num"><span class="pr-chip" style="background:{{ m.pr_color }};">{{ m.pr }}</span></td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
 
-    {% if view.class_summary %}
-    <div class="section-title">{{ t("cards.ship") }}</div>
-    <table class="stats-table">
-      <thead>
-        <tr>
-          <th>{{ t("cards.ship") }}</th>
-          <th class="num">{{ t("cards.battles") }}</th>
-          <th class="num">{{ t("cards.win_rate") }}</th>
-          <th class="num">{{ t("cards.avg_damage") }}</th>
-          <th class="num">{{ t("cards.avg_frags") }}</th>
-          <th class="num">{{ t("cards.pr") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for c in view.class_summary %}
-        <tr>
-          <td><strong>{{ t("ship_types." + c.ship_type) }}</strong></td>
-          <td class="num">{{ c.battles | intcomma }}</td>
-          <td class="num" style="color:{{ c.win_rate_color }};font-weight:700;">{{ c.win_rate }}%</td>
-          <td class="num">{{ c.avg_damage | intcomma }}</td>
-          <td class="num">{{ c.avg_frags }}</td>
-          <td class="num"><span class="pr-pill" style="background:{{ c.pr_color }};">{{ c.pr }}</span></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-
-    <div class="section-title">{{ t("cards.tier") }}</div>
-    <div class="tier-chart">
-      {% for tb in view.tier_bars %}
-      <div class="tier-col">
-        <div class="tier-bar" style="height: {{ [tb.pct * 0.62, 4] | max }}px;"></div>
-        <div class="tier-lbl">{{ tb.tier | roman }}</div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">{{ t("cards.ship_classes") }}</span>
+            <span class="panel-sub">CLASSES</span>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>{{ t("cards.ship") }}</th>
+                <th class="num">{{ t("cards.battles") }}</th>
+                <th class="num">{{ t("cards.win_rate") }}</th>
+                <th class="num">{{ t("cards.avg_damage") }}</th>
+                <th class="num">{{ t("cards.pr") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% set cls_colors = {'Battleship': '#dc2626', 'Cruiser': '#d97706', 'Destroyer': '#059669', 'AirCarrier': '#7c3aed', 'Submarine': '#0284c7'} %}
+              {% for c in view.class_summary %}
+              <tr>
+                <td>
+                  <span class="class-tag">
+                    <span class="class-dot" style="background:{{ cls_colors.get(c.ship_type, '#64748b') }};"></span>
+                    {{ t("ship_types." + c.ship_type) }}
+                  </span>
+                </td>
+                <td class="num">{{ c.battles | intcomma }}</td>
+                <td class="num" style="color:{{ c.win_rate_color }};font-weight:800;">{{ c.win_rate }}%</td>
+                <td class="num">{{ c.avg_damage | intcomma }}</td>
+                <td class="num"><span class="pr-chip" style="background:{{ c.pr_color }};">{{ c.pr }}</span></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </div>
-      {% endfor %}
-    </div>
 
-    <div class="footer">
-      <span>{{ t("cards.footer_generated") }}</span>
-      <span>{{ view.realm | upper }} · {{ view.account_id }}</span>
+      {% if view.top_ships %}
+      <div class="panel" style="margin-bottom: 16px;">
+        <div class="panel-header">
+          <span class="panel-title">{{ t("cards.top_ships") }}</span>
+          <span class="panel-sub">MOST PLAYED</span>
+        </div>
+        <div class="ships-grid">
+          {% for s in view.top_ships[:6] %}
+          <div class="ship-mini-card">
+            <div class="ship-mini-top">
+              <div class="ship-mini-name">
+                <span class="tier-tag">{{ s.tier | roman }}</span>{{ s.name }}
+              </div>
+              <span class="pr-chip" style="background:{{ s.pr_color }};min-width:44px;">{{ s.pr }}</span>
+            </div>
+            <div class="ship-mini-stats">
+              <span>{{ s.battles | intcomma }} {{ t("cards.battles_unit") }}</span>
+              <span style="color:{{ s.win_rate_color }};">{{ s.win_rate }}%</span>
+              <span>{{ s.avg_damage | intcomma }}</span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">{{ t("cards.tier_dist") }}</span>
+          <span class="panel-sub">TIER DISTRIBUTION</span>
+        </div>
+        <div class="tier-chart">
+          {% for tb in view.tier_bars %}
+          <div class="tier-col">
+            <div class="tier-cnt">{% if tb.battles > 0 %}{{ tb.battles | intcomma }}{% endif %}</div>
+            <div class="tier-bar {% if tb.battles == 0 %}tier-bar-empty{% endif %}" style="height: {{ [tb.pct * 0.62, 4] | max }}px;"></div>
+            <div class="tier-lbl">{{ tb.tier | roman }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="footer">
+        <span class="footer-brand">{{ t("cards.brand_name") }} · {{ t("cards.footer_generated") }}</span>
+        <span>{{ view.realm | upper }} · AID {{ view.account_id }}</span>
+      </div>
     </div>
   </div>
 </body>

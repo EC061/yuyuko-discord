@@ -11,7 +11,7 @@ import httpx
 import pytest
 import respx
 
-from wows_bot.bot.gamevox import patch_discord_for_gamevox
+from wows_bot.bot.gamevox import normalize_command_tokens, patch_discord_for_gamevox
 from wows_bot.clients.pr_source import PRSourceClient
 from wows_bot.clients.wg_api import WGApiClient, WGApiError, sanitize_wg_icon_url
 from wows_bot.config import Settings
@@ -170,3 +170,26 @@ def test_readonly_healthcheck_checks_heartbeat(tmp_path: Path) -> None:
         tx.execute("UPDATE metadata SET updated_at = ? WHERE key = 'heartbeat'", [int(time.time()) - 300])
     assert _run_healthcheck(settings) == 1
     dbm.close()
+
+
+def test_me_subcommand_normalization_and_subscription_status(repo: Repository) -> None:
+    assert normalize_command_tokens(["me", "last"]) == ("last", [])
+    assert normalize_command_tokens(["last", "me"]) == ("last", [])
+    assert normalize_command_tokens(["me", "recents"]) == ("recents", [])
+    assert normalize_command_tokens(["me", "recent", "14"]) == ("recent", ["14"])
+    assert normalize_command_tokens(["recent", "me", "7"]) == ("recent", ["7"])
+    assert normalize_command_tokens(["me", "ship", "大和"]) == ("ship", ["大和"])
+    assert normalize_command_tokens(["me", "track", "off"]) == ("track", ["off"])
+    assert normalize_command_tokens(["me"]) == ("me", [])
+    assert normalize_command_tokens(["na", "PlayerOne"]) == ("na", ["PlayerOne"])
+
+    repo.bind_account(
+        gamevox_user_id="u1",
+        realm="na",
+        account_id=1001,
+        nickname="PlayerOne",
+        guild_id="g1",
+        auto_post_channel_id="c1",
+    )
+    assert repo.get_enabled_subscription_channels("na", 1001, guild_id="g1") == ["c1"]
+    assert repo.get_enabled_subscription_channels("na", 1001, guild_id="g2") == []

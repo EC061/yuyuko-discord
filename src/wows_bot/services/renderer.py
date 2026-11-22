@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 from datetime import UTC, datetime
 from typing import Any
@@ -56,6 +57,12 @@ class CardRenderer:
         self._browser: Browser | None = None
         self._start_lock = asyncio.Lock()
         self._base_css = (settings.templates_dir / "base.css").read_text(encoding="utf-8")
+        badge_path = settings.templates_dir.parent / "assets" / "bot-badge-96.png"
+        if badge_path.exists():
+            b64 = base64.b64encode(badge_path.read_bytes()).decode("ascii")
+            self._brand_icon_uri = f"data:image/png;base64,{b64}"
+        else:
+            self._brand_icon_uri = ""
 
         self._jinja = Environment(
             loader=FileSystemLoader(str(settings.templates_dir)),
@@ -107,6 +114,7 @@ class CardRenderer:
         return tpl.render(
             **context,
             base_css=self._base_css,
+            brand_icon_uri=self._brand_icon_uri,
             lang=lang,
             cat=self.i18n.catalog(lang),
             t=lambda key, **kw: self.i18n.t(key, lang=lang, **kw),

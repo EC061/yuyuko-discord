@@ -31,6 +31,36 @@ from wows_bot.services.stats_builder import (
 MENTION_RE = re.compile(r"<@!?(\d+)>")
 _GAMEVOX_PATCHED = False
 
+_SELF_TOKENS = frozenset({"me", "自己", "我"})
+_ME_PROMOTABLE_SUBCOMMANDS = frozenset(
+    {
+        "last",
+        "recents",
+        "单局",
+        "单场近期",
+        "recent",
+        "近期",
+        "ship",
+        "单船",
+        "track",
+        "追踪",
+        "推送",
+    }
+)
+
+
+def normalize_command_tokens(tokens: list[str]) -> tuple[str, list[str]]:
+    """Normalize command aliases like `wws me last` -> (`last`, []) and `wws last me` -> (`last`, [])."""
+    if not tokens:
+        return "", []
+    first = tokens[0].lower()
+    rest = list(tokens[1:])
+    if first in _SELF_TOKENS and rest and rest[0].lower() in _ME_PROMOTABLE_SUBCOMMANDS:
+        return rest[0].lower(), rest[1:]
+    if first in _ME_PROMOTABLE_SUBCOMMANDS and rest and rest[0].lower() in _SELF_TOKENS:
+        return first, rest[1:]
+    return first, rest
+
 
 def _sanitize_echo(text: str, max_len: int = 80) -> str:
     """Strip backticks, newlines, and control chars before echoing user input in chat."""
@@ -353,8 +383,7 @@ class WoWSGameVoxBot(discord.Client):
             await self._safe_reply(message, self.i18n.t("bot.help_text", lang=lang, prefix=prefix))
             return
 
-        cmd = tokens[0].lower()
-        rest = tokens[1:]
+        cmd, rest = normalize_command_tokens(tokens)
 
         # --- Language (personal for anyone; `server` requires guild admin) ---
         if cmd in ("lang", "language", "语言"):
@@ -511,7 +540,13 @@ class WoWSGameVoxBot(discord.Client):
             realm, aid, nick = resolved
             group = self.repo.get_latest_match_group_for_account(realm, aid)
             if not group:
-                await self._safe_reply(message, self.i18n.t("bot.no_last_match", lang=lang, nickname=nick))
+                sub_status = self._format_subscription_status(
+                    realm, aid, guild_id, str(message.channel.id), prefix, lang
+                )
+                await self._safe_reply(
+                    message,
+                    self.i18n.t("bot.no_last_match", lang=lang, nickname=nick, sub_status=sub_status),
+                )
                 return
             ships_meta = self.repo.get_ships_map([r["ship_id"] for r in group["records"]])
             img = await self.renderer.render_match_group(group, ships_meta, lang=lang)
@@ -532,8 +567,14 @@ class WoWSGameVoxBot(discord.Client):
             since_date = (datetime.now(tz=UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
             baseline = self.repo.get_daily_snapshot_on_or_before(realm, aid, since_date)
             if baseline is None:
+                sub_status = self._format_subscription_status(
+                    realm, aid, guild_id, str(message.channel.id), prefix, lang
+                )
                 await self._safe_reply(
-                    message, self.i18n.t("bot.no_recent_data", lang=lang, nickname=nick, days=days)
+                    message,
+                    self.i18n.t(
+                        "bot.no_recent_data", lang=lang, nickname=nick, days=days, sub_status=sub_status
+                    ),
                 )
                 return
             raw_ships = await self.wg.get_account_ships_stats(realm, aid)
@@ -555,8 +596,14 @@ class WoWSGameVoxBot(discord.Client):
                 lang=lang,
             )
             if view is None:
+                sub_status = self._format_subscription_status(
+                    realm, aid, guild_id, str(message.channel.id), prefix, lang
+                )
                 await self._safe_reply(
-                    message, self.i18n.t("bot.no_recent_data", lang=lang, nickname=nick, days=days)
+                    message,
+                    self.i18n.t(
+                        "bot.no_recent_data", lang=lang, nickname=nick, days=days, sub_status=sub_status
+                    ),
                 )
                 return
             img = await self.renderer.render_recent_summary(view, lang=lang)
@@ -754,7 +801,7 @@ class WoWSGameVoxBot(discord.Client):
             return
 
         # --- Default: Player overview (`wws me` or `wws <realm> <nickname>`) ---
-        query_tokens = [] if cmd == "me" else tokens
+        query_tokens = [] if cmd in _SELF_TOKENS else tokens
         resolved = await self._resolve_target_account(query_tokens, read_target_uid, lang)
         if isinstance(resolved, str):
             await self._safe_reply(message, resolved)
@@ -791,6 +838,22 @@ class WoWSGameVoxBot(discord.Client):
         )
         img = await self.renderer.render_player_overview(view, lang=lang)
         await self._send_image_reply(message, img, f"overview_{realm}_{aid}")
+
+    def _format_subscription_status(
+        self,
+        realm: Realm,
+        account_id: int,
+        guild_id: str | None,
+        channel_id: str,
+        prefix: str,
+        lang: Language,
+    ) -> str:
+        channels = self.repo.get_enabled_subscription_channels(realm, account_id, guild_id=guild_id)
+        if channel_id in channels:
+            return self.i18n.t("bot.sub_status_on", lang=lang)
+        if channels:
+            return self.i18n.t("bot.sub_status_on_other", lang=lang)
+        return self.i18n.t("bot.sub_status_off", lang=lang, prefix=prefix)
 
     async def _resolve_target_account(
         self,

@@ -2,65 +2,88 @@
 <html lang="{{ lang }}">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https://*.wgcdn.co https://*.gcdn.co https://*.worldofwarships.com https://*.worldofwarships.eu https://*.worldofwarships.asia;" />
   <style>{{ base_css | safe }}</style>
 </head>
 <body>
   <div class="card-root">
-    <div class="header">
-      <div class="header-left">
-        <div class="title-row">
-          <span class="clan-tag">[{{ view.tag }}]</span>
-          <span class="player-name">{{ view.name }}</span>
-          <span class="badge">{{ t("realms." + view.realm) }}</span>
+    <div class="top-stripe"></div>
+    <div class="card-inner">
+      <div class="masthead">
+        <div class="identity-block">
+          <div class="brand-eyebrow">
+            <span class="brand-dot"></span>
+            <span>{{ t("cards.brand_name") }} · {{ t("cards.clan_title") }}</span>
+          </div>
+          <div class="title-row">
+            <span class="clan-tag">[{{ view.tag }}]</span>
+            <span class="player-name">{{ view.name }}</span>
+            <span class="realm-pill">{{ t("realms." + view.realm) }}</span>
+          </div>
+          <div class="meta-line">{{ view.description or "-" }}</div>
         </div>
-        <div class="subtitle">{{ t("cards.clan_title") }} · {{ view.description or "-" }}</div>
+        <div class="police-crest">
+          {% if brand_icon_uri %}
+            <img class="crest-badge-img" src="{{ brand_icon_uri }}" alt="" />
+          {% else %}
+            <svg width="32" height="32" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M18 3L31 8V17.5C31 25.3 25.5 31.6 18 33.5C10.5 31.6 5 25.3 5 17.5V8L18 3Z" fill="#1E3A8A" stroke="#2563EB" stroke-width="2"/>
+              <path d="M18 11.5L19.9 15.4L24.2 16L21.1 19L21.8 23.3L18 21.3L14.2 23.3L14.9 19L11.8 16L16.1 15.4L18 11.5Z" fill="#FACC15"/>
+            </svg>
+          {% endif %}
+          <div class="crest-text">
+            <span class="crest-title">{{ t("cards.brand_name") }}</span>
+            <span class="crest-sub">{{ t("cards.brand_tagline") }}</span>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <div class="kpi-grid">
-      <div class="kpi-box">
-        <div class="kpi-title">{{ t("cards.clan_members") }}</div>
-        <div class="kpi-val">{{ view.members_count }}</div>
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">{{ t("cards.clan_members") }}</div>
+          <div class="kpi-value">{{ view.members_count }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Leader</div>
+          <div class="kpi-value" style="font-size:20px;">{{ view.leader_name }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Clan ID</div>
+          <div class="kpi-value" style="font-size:20px;">{{ view.clan_id }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Created</div>
+          <div class="kpi-value" style="font-size:18px;">{{ view.created_at_str }}</div>
+        </div>
       </div>
-      <div class="kpi-box">
-        <div class="kpi-title">Leader</div>
-        <div class="kpi-val" style="font-size:20px;">{{ view.leader_name }}</div>
-      </div>
-      <div class="kpi-box">
-        <div class="kpi-title">Clan ID</div>
-        <div class="kpi-val" style="font-size:20px;">{{ view.clan_id }}</div>
-      </div>
-      <div class="kpi-box">
-        <div class="kpi-title">Created</div>
-        <div class="kpi-val" style="font-size:18px;">{{ view.created_at_str }}</div>
-      </div>
-    </div>
 
-    {% if view.members %}
-    <table class="stats-table">
-      <thead>
-        <tr>
-          <th>{{ t("cards.player") }}</th>
-          <th>Role</th>
-          <th class="num">Joined</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for m in view.members[:15] %}
-        <tr>
-          <td><strong>{{ m.account_name }}</strong></td>
-          <td>{{ m.role }}</td>
-          <td class="num">{{ m.joined_at_str }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
+      {% if view.members %}
+      <div class="panel">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>{{ t("cards.player") }}</th>
+              <th>Role</th>
+              <th class="num">Joined</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in view.members[:15] %}
+            <tr>
+              <td><strong>{{ m.account_name }}</strong></td>
+              <td>{{ m.role }}</td>
+              <td class="num">{{ m.joined_at_str }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
 
-    <div class="footer">
-      <span>{{ t("cards.footer_generated") }}</span>
-      <span>{{ view.realm | upper }} · Clan #{{ view.clan_id }}</span>
+      <div class="footer">
+        <span class="footer-brand">{{ t("cards.brand_name") }} · {{ t("cards.footer_generated") }}</span>
+        <span>{{ view.realm | upper }} · Clan #{{ view.clan_id }}</span>
+      </div>
     </div>
   </div>
 </body>

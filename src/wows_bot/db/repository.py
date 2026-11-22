@@ -414,6 +414,30 @@ class Repository:
         )
         return [_row_to_tracked(r) for r in rows]
 
+    def get_enabled_subscription_channels(
+        self, realm: Realm, account_id: int, guild_id: str | None = None
+    ) -> list[str]:
+        """Return enabled auto-post channel IDs for an account (optionally scoped to a guild)."""
+        if guild_id:
+            rows = self.db.query(
+                """
+                SELECT channel_id FROM tracked_subscriptions
+                WHERE realm = ? AND account_id = ? AND guild_id = ? AND enabled = 1
+                ORDER BY channel_id ASC
+                """,
+                [realm, account_id, guild_id],
+            )
+        else:
+            rows = self.db.query(
+                """
+                SELECT channel_id FROM tracked_subscriptions
+                WHERE realm = ? AND account_id = ? AND enabled = 1
+                ORDER BY channel_id ASC
+                """,
+                [realm, account_id],
+            )
+        return [str(r["channel_id"]) for r in rows]
+
     def list_related_tracked_account_ids(self, realm: Realm, account_id: int) -> list[int]:
         """Return other tracked account IDs sharing a subscribed channel/guild or clan."""
         rows = self.db.query(

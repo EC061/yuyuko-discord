@@ -66,13 +66,15 @@ def test_all_card_templates_render_zh_and_en() -> None:
 
     zh_div = renderer.render_html("match_division.html", division_ctx, lang="zh")
     en_div = renderer.render_html("match_division.html", division_ctx, lang="en")
-    assert "车队战绩结算" in zh_div
+    assert "水表警察" in zh_div
+    assert "车队战绩核查" in zh_div
     assert "283,000" in zh_div
-    assert "Division Battle Report" in en_div
+    assert "Division Inspection Report" in en_div
     assert "VICTORY" in en_div
 
     zh_solo = renderer.render_html("match_solo.html", division_ctx, lang="zh")
-    assert "单局战绩结算" in zh_solo
+    assert "单局战绩核查" in zh_solo
+    assert "水表警察" in zh_solo
 
     ship = ShipMeta(4276041424, "Yamato", "大和", 10, "Battleship", "japan", False, False, "", "", "")
     rank_html = renderer.render_html(
