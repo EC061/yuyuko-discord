@@ -206,12 +206,12 @@ jobs:
           COMPOSE_DIR="$1"
           if sudo -n true 2>/dev/null; then
             sudo mkdir -p "${COMPOSE_DIR}/data"
-            sudo chown -R 10001:10001 "${COMPOSE_DIR}/data"
-            sudo bash -c 'cd "$1" && docker compose pull && docker compose up -d --remove-orphans && docker compose ps' _ "${COMPOSE_DIR}"
+            sudo bash -c 'cd "$1" && docker compose pull && docker compose down && chown -R 10001:10001 "${1}/data" && docker compose up -d --remove-orphans && docker compose ps' _ "${COMPOSE_DIR}"
           else
             mkdir -p "${COMPOSE_DIR}/data"
             cd "${COMPOSE_DIR}"
             docker compose pull
+            docker compose down
             docker compose up -d --remove-orphans
             docker compose ps
           fi
