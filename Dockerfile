@@ -1,6 +1,6 @@
 # Multi-arch image (linux/amd64 + linux/arm64)
 # Debian 13 (Trixie) provides glibc 2.41 (>= 2.38 required for prebuilt honker manylinux_2_38 wheels)
-FROM python:3.12-slim-trixie
+FROM python:3.15-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
