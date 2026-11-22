@@ -1,6 +1,6 @@
 # 1Panel-compatible Docker Compose template
-# Paste this into 1Panel -> Containers -> Compose (or deploy via GitHub Actions SSH).
-# Put your secrets in the `.env` file alongside this compose file (never commit `.env`).
+# Paste this into 1Panel -> Containers -> Compose, and put GAMEVOX_BOT_TOKEN & WG_APPLICATION_ID
+# into 1Panel's built-in "环境变量" box (or a local .env file when running docker compose locally).
 
 services:
   wows-gamevox-bot:
@@ -9,9 +9,9 @@ services:
     restart: unless-stopped
     init: true
     shm_size: "512m"
-    env_file:
-      - .env
     environment:
+      GAMEVOX_BOT_TOKEN: ${GAMEVOX_BOT_TOKEN}
+      WG_APPLICATION_ID: ${WG_APPLICATION_ID}
       GAMEVOX_API_BASE: ${GAMEVOX_API_BASE:-https://app-api.gamevox.com/api/v10}
       GAMEVOX_GATEWAY_URL: ${GAMEVOX_GATEWAY_URL:-wss://gateway.gamevox.com/?v=10&encoding=json}
       DEFAULT_GUILD_ID: ${DEFAULT_GUILD_ID:-1487625003808419840}
