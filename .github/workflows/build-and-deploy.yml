@@ -168,37 +168,51 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_COMPOSE_DIR: ${{ secrets.VPS_COMPOSE_DIR }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
-          if [ -z "$VPS_HOST" ] || [ -z "$VPS_SSH_KEY" ] || [ -z "$VPS_COMPOSE_DIR" ]; then
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_SSH_KEY" ] || [ -z "$VPS_COMPOSE_DIR" ] || [ -z "$VPS_KNOWN_HOSTS" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping SSH deploy: configure VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_COMPOSE_DIR repo secrets."
+            echo "Skipping SSH deploy: configure VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_KNOWN_HOSTS, VPS_COMPOSE_DIR repo secrets."
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy via SSH (1Panel Compose directory)
+      - name: Deploy via native OpenSSH (1Panel Compose directory)
         if: steps.check.outputs.ready == 'true'
-        uses: appleboy/ssh-action@v1.2.0
         env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT || 22 }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
           VPS_COMPOSE_DIR: ${{ secrets.VPS_COMPOSE_DIR }}
-          IMAGE_TAG: ${{ needs.merge.outputs.image_tag }}
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
-          envs: VPS_COMPOSE_DIR,IMAGE_TAG
-          script: |
-            set -euo pipefail
-            if sudo -n true 2>/dev/null; then
-              sudo mkdir -p "${VPS_COMPOSE_DIR}/data"
-              sudo chown -R 10001:10001 "${VPS_COMPOSE_DIR}/data"
-              sudo bash -c "cd \"${VPS_COMPOSE_DIR}\" && docker compose pull && docker compose up -d --remove-orphans && docker compose ps"
-            else
-              mkdir -p "${VPS_COMPOSE_DIR}/data"
-              cd "${VPS_COMPOSE_DIR}"
-              docker compose pull
-              docker compose up -d --remove-orphans
-              docker compose ps
-            fi
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          trap 'rm -f ~/.ssh/deploy_key' EXIT
+
+          ssh -i ~/.ssh/deploy_key \
+              -p "${VPS_PORT}" \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o BatchMode=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              bash -s -- "${VPS_COMPOSE_DIR}" <<'REMOTE'
+          set -euo pipefail
+          COMPOSE_DIR="$1"
+          if sudo -n true 2>/dev/null; then
+            sudo mkdir -p "${COMPOSE_DIR}/data"
+            sudo chown -R 10001:10001 "${COMPOSE_DIR}/data"
+            sudo bash -c 'cd "$1" && docker compose pull && docker compose up -d --remove-orphans && docker compose ps' _ "${COMPOSE_DIR}"
+          else
+            mkdir -p "${COMPOSE_DIR}/data"
+            cd "${COMPOSE_DIR}"
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker compose ps
+          fi
+          REMOTE
