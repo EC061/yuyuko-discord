@@ -1,7 +1,9 @@
-"""Batched WG poller, diff engine, and fast squadmate recheck logic."""
+"""Batched WG poller, atomic diff engine, and scoped squadmate recheck logic."""
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 
 from loguru import logger
@@ -11,6 +13,10 @@ from wows_bot.clients.wg_api import WGApiClient
 from wows_bot.config import SUPPORTED_REALMS, Realm, Settings
 from wows_bot.db.repository import Repository
 from wows_bot.services.stats_builder import compact_ship_snapshot, compute_ship_deltas
+
+
+class ShipsStatsLagError(RuntimeError):
+    """Raised when WG /account/info last_battle_time advances before /ships/stats updates."""
 
 
 class PollerService:
@@ -25,26 +31,23 @@ class PollerService:
         self.repo = repo
         self.wg = wg_client
         self.pr_client = pr_client
+        self._in_flight_diffs: set[tuple[str, int]] = set()
 
     async def sync_reference_data(self) -> None:
-        """Refresh PR expected values and WG ship encyclopedia (zh-cn + en)."""
+        """Refresh PR expected values and WG ship encyclopedia (offloaded to thread)."""
         pr_values = await self.pr_client.fetch_expected_values()
         if pr_values:
-            self.repo.upsert_pr_expected(pr_values)
+            await asyncio.to_thread(self.repo.upsert_pr_expected, pr_values)
 
         if self.settings.wg_application_id:
             try:
                 ships = await self.wg.fetch_encyclopedia_ships(self.settings.default_realm)
                 if ships:
-                    self.repo.upsert_ships(ships)
+                    await asyncio.to_thread(self.repo.upsert_ships, ships)
             except Exception as exc:
                 logger.warning("Failed to sync WG encyclopedia: {}", exc)
 
     async def poll_all_realms(self) -> int:
-        """Run batched last_battle_time pre-checks across NA/EU/ASIA.
-
-        Returns number of accounts enqueued for detailed diffing.
-        """
         if not self.settings.wg_application_id:
             return 0
         enqueued = 0
@@ -56,9 +59,12 @@ class PollerService:
         self,
         realm: Realm,
         *,
+        only_account_ids: set[int] | None = None,
         exclude_account_ids: set[int] | None = None,
     ) -> int:
         accounts = self.repo.list_tracked_accounts(realm)
+        if only_account_ids is not None:
+            accounts = [a for a in accounts if a.account_id in only_account_ids]
         if exclude_account_ids:
             accounts = [a for a in accounts if a.account_id not in exclude_account_ids]
         if not accounts:
@@ -100,7 +106,11 @@ class PollerService:
             has_new_battle = last_bt > tracked.last_battle_time
 
             if needs_seed or has_new_battle:
+                key = (realm, aid)
+                if key in self._in_flight_diffs:
+                    continue
                 if poll_q is not None:
+                    self._in_flight_diffs.add(key)
                     poll_q.enqueue(
                         {
                             "type": "fetch_player_diff",
@@ -111,15 +121,13 @@ class PollerService:
                         }
                     )
                     enqueued += 1
-            else:
-                # Touch nickname/hidden state if changed
-                if nickname != tracked.nickname or tracked.hidden_profile:
-                    self.repo.update_tracked_account_poll_state(
-                        realm=realm,
-                        account_id=aid,
-                        nickname=nickname,
-                        hidden_profile=False,
-                    )
+            elif nickname != tracked.nickname or tracked.hidden_profile:
+                self.repo.update_tracked_account_poll_state(
+                    realm=realm,
+                    account_id=aid,
+                    nickname=nickname,
+                    hidden_profile=False,
+                )
         return enqueued
 
     async def process_player_diff(
@@ -130,12 +138,27 @@ class PollerService:
         nickname: str | None = None,
         last_battle_time: int | None = None,
     ) -> list[int]:
-        """Fetch per-ship stats for one account, diff against snapshot, and coalesce battles.
+        """Fetch per-ship stats, compute diffs, and commit snapshot + battles + outbox atomically."""
+        try:
+            return await self._process_player_diff_inner(
+                realm, account_id, nickname=nickname, last_battle_time=last_battle_time
+            )
+        finally:
+            self._in_flight_diffs.discard((realm, account_id))
 
-        Returns list of affected match_group_ids.
-        """
+    async def _process_player_diff_inner(
+        self,
+        realm: Realm,
+        account_id: int,
+        *,
+        nickname: str | None,
+        last_battle_time: int | None,
+    ) -> list[int]:
         tracked = self.repo.get_tracked_account(realm, account_id)
         if tracked is None:
+            return []
+
+        if tracked.hidden_profile and last_battle_time is None:
             return []
 
         if last_battle_time is None or nickname is None:
@@ -145,7 +168,12 @@ class PollerService:
                 fields="account_id,nickname,last_battle_time,hidden_profile",
             )
             info = batch.get(account_id)
-            if not info or info.get("hidden_profile"):
+            if not info:
+                return []
+            if info.get("hidden_profile"):
+                self.repo.update_tracked_account_poll_state(
+                    realm=realm, account_id=account_id, hidden_profile=True
+                )
                 return []
             nickname = str(info.get("nickname") or tracked.nickname)
             last_battle_time = int(info.get("last_battle_time") or 0)
@@ -166,18 +194,18 @@ class PollerService:
 
         # First-time seed: record baseline without spamming historical matches
         if not tracked.baseline_seeded or not old_snapshots:
-            self.repo.save_ship_snapshots(
+            await asyncio.to_thread(
+                self.repo.save_ship_snapshots,
                 realm,
                 account_id,
                 new_snapshots,
                 last_battle_time=last_battle_time,
+                old_snapshots=None,
                 nickname=nickname,
                 clan_id=clan_id,
                 clan_tag=clan_tag,
                 mark_seeded=True,
-            )
-            self.repo.upsert_daily_snapshot(
-                realm, account_id, today_str, {"last_battle_time": last_battle_time}, new_snapshots
+                daily_snapshot_date=today_str,
             )
             logger.info("Seeded baseline snapshot for {}:{} ({})", realm, account_id, nickname)
             return []
@@ -197,30 +225,35 @@ class PollerService:
             expected_map=expected_map,
         )
 
-        # Save new snapshot & daily baseline
-        self.repo.save_ship_snapshots(
-            realm,
-            account_id,
-            new_snapshots,
+        # WG /account/info last_battle_time can advance 5-30s before /ships/stats reflects it.
+        # Do NOT advance watermark while fresh (<90s); retry shortly instead of losing the battle!
+        if not deltas and last_battle_time > tracked.last_battle_time:
+            age_s = time.time() - last_battle_time
+            if 0 <= age_s < 90:
+                raise ShipsStatsLagError(
+                    f"WG ships/stats lagging behind last_battle_time for {realm}:{account_id}"
+                )
+
+        outcomes = await asyncio.to_thread(
+            self.repo.commit_player_poll_and_coalesce,
+            realm=realm,
+            account_id=account_id,
+            new_snapshots=new_snapshots,
+            old_snapshots=old_snapshots,
+            deltas=deltas,
             last_battle_time=last_battle_time,
             nickname=nickname,
             clan_id=clan_id,
             clan_tag=clan_tag,
-            mark_seeded=True,
-        )
-        self.repo.upsert_daily_snapshot(
-            realm, account_id, today_str, {"last_battle_time": last_battle_time}, new_snapshots
+            daily_snapshot_date=today_str,
+            time_tolerance_s=self.settings.squad_time_tolerance_seconds,
+            recheck_delay_s=self.settings.squad_recheck_delay_seconds,
+            finalize_delay_s=self.settings.squad_finalize_delay_seconds,
+            enqueue_jobs=True,
         )
 
         group_ids: list[int] = []
-        for delta in deltas:
-            outcome = self.repo.record_battle_and_coalesce(
-                delta,
-                time_tolerance_s=self.settings.squad_time_tolerance_seconds,
-                recheck_delay_s=self.settings.squad_recheck_delay_seconds,
-                finalize_delay_s=self.settings.squad_finalize_delay_seconds,
-                enqueue_jobs=True,
-            )
+        for delta, outcome in zip(deltas, outcomes, strict=True):
             group_ids.append(outcome.match_group_id)
             logger.info(
                 "Recorded battle {}:{} ({}) {} dmg={} pr={:.0f} -> group #{} (members={}/{}, finalized={})",

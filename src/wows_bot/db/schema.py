@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import shutil
+import sqlite3
 import time
 from pathlib import Path
 
 import honker
 from loguru import logger
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATION_V1_SQL: tuple[str, ...] = (
     """
@@ -185,6 +185,24 @@ MIGRATION_V1_SQL: tuple[str, ...] = (
     """,
 )
 
+MIGRATION_V2_SQL: tuple[str, ...] = (
+    # Dedicated user language preferences table (works even for unbound users)
+    """
+    CREATE TABLE IF NOT EXISTS user_preferences (
+        gamevox_user_id TEXT PRIMARY KEY,
+        lang TEXT NOT NULL DEFAULT 'zh',
+        updated_at INTEGER NOT NULL
+    )
+    """,
+    # Lease timestamp on match_deliveries so crashed 'sending' slots can be reclaimed
+    "ALTER TABLE match_deliveries ADD COLUMN claimed_at INTEGER",
+)
+
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    1: MIGRATION_V1_SQL,
+    2: MIGRATION_V2_SQL,
+}
+
 
 class DatabaseManager:
     """Owns the single SQLite WAL file + Honker queues."""
@@ -214,8 +232,6 @@ class DatabaseManager:
             watcher_poll_interval_ms=self.watch_interval_ms,
         )
 
-        # Honker opens SQLite in WAL mode with busy_timeout & synchronous=NORMAL automatically;
-        # verify WAL is active and enable foreign keys.
         mode = str(self._db.query("PRAGMA journal_mode")[0]["journal_mode"]).lower()
         if mode != "wal":
             logger.warning("Expected SQLite WAL mode, got {}", mode)
@@ -230,23 +246,40 @@ class DatabaseManager:
         self.render_queue = self._db.queue("wows_render", visibility_timeout_s=180, max_attempts=5)
         return self
 
+    def _backup_wal_consistent(self, current_version: int) -> None:
+        """Create a WAL-consistent online SQLite backup before running schema migrations."""
+        if not self.db_path.exists():
+            return
+        backup_path = self.db_path.with_suffix(f".db.v{current_version}.{int(time.time())}.bak")
+        src = sqlite3.connect(str(self.db_path))
+        dst = sqlite3.connect(str(backup_path))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        logger.info("Created WAL-consistent SQLite backup at {}", backup_path)
+
     def _run_migrations(self) -> None:
         rows = self.db.query("PRAGMA user_version")
         current = int(rows[0]["user_version"]) if rows else 0
-        if current >= SCHEMA_VERSION:
+        if current > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema v{current} is newer than supported v{SCHEMA_VERSION}"
+            )
+        if current == SCHEMA_VERSION:
             return
 
-        if current > 0 and self.db_path.exists():
-            backup_path = self.db_path.with_suffix(f".db.v{current}.{int(time.time())}.bak")
-            shutil.copy2(self.db_path, backup_path)
-            logger.info("Backed up SQLite DB before migration to {}", backup_path)
+        if current > 0:
+            self._backup_wal_consistent(current)
 
-        if current < 1:
-            logger.info("Applying SQLite schema migration v1 to {}", self.db_path)
+        for target_ver in range(current + 1, SCHEMA_VERSION + 1):
+            stmts = MIGRATIONS[target_ver]
+            logger.info("Applying SQLite schema migration v{} to {}", target_ver, self.db_path)
             with self.db.transaction() as tx:
-                for stmt in MIGRATION_V1_SQL:
+                for stmt in stmts:
                     tx.execute(stmt)
-                tx.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                tx.execute(f"PRAGMA user_version = {target_ver}")
 
     def close(self) -> None:
         if self._db is not None:

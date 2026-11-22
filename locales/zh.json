@@ -93,8 +93,11 @@
     "track_enabled": "已在本频道开启 **{realm}** `{nickname}` 的自动战报推送（含车队合并防重）。",
     "track_disabled": "已关闭 **{realm}** `{nickname}` 在本频道的自动战报推送。",
     "channel_set": "已将本频道设为默认战报推送频道。",
-    "lang_set": "已切换语言为 **简体中文**。",
+    "lang_set": "已切换个人语言为 **简体中文**。",
+    "lang_server_set": "已切换本服务器默认语言为 **简体中文**。",
     "lang_invalid": "支持的语言：`zh`（中文）、`en`（English）。",
+    "permission_denied": "权限不足：该指令仅限服务器管理员执行。",
+    "cooldown_active": "操作过于频繁，请稍候 {seconds} 秒再试。",
     "wg_key_missing": "服务端尚未配置 `WG_APPLICATION_ID`，暂时无法查询 Wargaming API。",
     "hidden_profile": "玩家 `{nickname}` 已隐藏游戏战绩，无法查询。",
     "no_recent_data": "暂无 `{nickname}` 最近 {days} 天的本地战绩记录（绑定后将自动每日记录）。",
@@ -104,7 +107,7 @@
     "clan_not_found": "未在 **{realm}** 找到军团 `{tag}`。",
     "roll_result": "🎲 随机为你抽到了：**T{tier} {ship_name}**（{ship_type} · {nation}）",
     "roll_empty": "没有符合条件的战舰。",
-    "error_generic": "查询失败：{error}",
+    "error_generic": "查询暂时失败（错误编号 `{error_id}`），请稍后重试。",
     "help_text": "**战舰世界自托管水表 Bot 指令（区服支持 NA / EU / ASIA）**\n• `{prefix} bind <na|eu|asia> <昵称>` — 绑定账号并自动追踪\n• `{prefix} me` / `{prefix} <区服> <昵称>` — 查询总览水表\n• `{prefix} ship <船名>` — 查询单船水表\n• `{prefix} recent [天数]` — 查询近期战绩（默认 7 天）\n• `{prefix} last` / `{prefix} recents` — 查询最近单局/车队战绩\n• `{prefix} track on|off` — 开启/关闭本频道自动战报推送\n• `{prefix} ship.rank <区服> <船名>` — 单船排行榜\n• `{prefix} clan <区服> <TAG>` — 查询军团信息\n• `{prefix} roll [等级] [舰种]` — 随机抽船\n• `{prefix} lang <zh|en>` — 切换中/英文（默认中文）"
   }
 }

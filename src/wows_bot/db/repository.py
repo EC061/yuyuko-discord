@@ -129,6 +129,10 @@ def _row_to_binding(r: dict[str, Any]) -> UserBinding:
     )
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class Repository:
     """High-level data access over SQLite WAL + Honker transactional outbox."""
 
@@ -140,9 +144,37 @@ class Repository:
         return self.dbm.db
 
     # ------------------------------------------------------------------
+    # Heartbeat & Retention Maintenance
+    # ------------------------------------------------------------------
+    def touch_heartbeat(self, status: str = "ok") -> None:
+        now = int(time.time())
+        with self.db.transaction() as tx:
+            tx.execute(
+                """
+                INSERT INTO metadata (key, value, updated_at)
+                VALUES ('heartbeat', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                [status, now],
+            )
+
+    def prune_old_data(self, *, daily_retention_days: int = 95, match_retention_days: int = 30) -> None:
+        now = int(time.time())
+        daily_cutoff = now - daily_retention_days * 86400
+        match_cutoff = now - match_retention_days * 86400
+        with self.db.transaction() as tx:
+            tx.execute("DELETE FROM daily_snapshots WHERE created_at < ?", [daily_cutoff])
+            tx.execute(
+                "DELETE FROM match_groups WHERE status IN ('posted', 'finalized') AND created_at < ?",
+                [match_cutoff],
+            )
+
+    # ------------------------------------------------------------------
     # Guild settings & language resolution
     # ------------------------------------------------------------------
-    def get_guild_settings(self, guild_id: str) -> dict[str, Any]:
+    def get_guild_settings(self, guild_id: str) -> dict[str, Any] | None:
         rows = self.db.query(
             """
             SELECT guild_id, default_lang, auto_post_channel_id, auto_group_divisions, command_prefix
@@ -152,13 +184,7 @@ class Repository:
             [guild_id],
         )
         if not rows:
-            return {
-                "guild_id": guild_id,
-                "default_lang": "zh",
-                "auto_post_channel_id": None,
-                "auto_group_divisions": True,
-                "command_prefix": "wws",
-            }
+            return None
         r = rows[0]
         return {
             "guild_id": str(r["guild_id"]),
@@ -175,8 +201,14 @@ class Repository:
         default_lang: Language | None = None,
         auto_post_channel_id: str | None = None,
         auto_group_divisions: bool | None = None,
+        fallback_lang: Language = "zh",
     ) -> None:
-        cur = self.get_guild_settings(guild_id)
+        cur = self.get_guild_settings(guild_id) or {
+            "default_lang": fallback_lang,
+            "auto_post_channel_id": None,
+            "auto_group_divisions": True,
+            "command_prefix": "wws",
+        }
         now = int(time.time())
         with self.db.transaction() as tx:
             tx.execute(
@@ -200,6 +232,18 @@ class Repository:
                 ],
             )
 
+    def seed_guild_auto_post_channel_if_unset(
+        self, guild_id: str, channel_id: str, default_lang: Language = "zh"
+    ) -> None:
+        """Seed default auto-post channel only if no channel has been configured yet."""
+        cur = self.get_guild_settings(guild_id)
+        if cur is None or not cur["auto_post_channel_id"]:
+            self.upsert_guild_settings(
+                guild_id,
+                auto_post_channel_id=channel_id,
+                fallback_lang=default_lang,
+            )
+
     def resolve_language(
         self,
         *,
@@ -208,6 +252,12 @@ class Repository:
         fallback: Language = "zh",
     ) -> Language:
         if user_id:
+            pref = self.db.query(
+                "SELECT lang FROM user_preferences WHERE gamevox_user_id = ?",
+                [user_id],
+            )
+            if pref and pref[0]["lang"] in ("zh", "en"):
+                return pref[0]["lang"]
             rows = self.db.query(
                 """
                 SELECT lang_override FROM user_bindings
@@ -220,24 +270,27 @@ class Repository:
                 return rows[0]["lang_override"]
         if guild_id:
             gs = self.get_guild_settings(guild_id)
-            if gs["default_lang"] in ("zh", "en"):
+            if gs is not None and gs["default_lang"] in ("zh", "en"):
                 return gs["default_lang"]
         return fallback
 
-    def set_user_language(self, user_id: str, lang: Language) -> bool:
+    def set_user_language(self, user_id: str, lang: Language) -> None:
         now = int(time.time())
         with self.db.transaction() as tx:
-            rows = tx.query(
-                "SELECT id FROM user_bindings WHERE gamevox_user_id = ?",
-                [user_id],
+            tx.execute(
+                """
+                INSERT INTO user_preferences (gamevox_user_id, lang, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(gamevox_user_id) DO UPDATE SET
+                    lang = excluded.lang,
+                    updated_at = excluded.updated_at
+                """,
+                [user_id, lang, now],
             )
-            if not rows:
-                return False
             tx.execute(
                 "UPDATE user_bindings SET lang_override = ?, updated_at = ? WHERE gamevox_user_id = ?",
                 [lang, now, user_id],
             )
-        return True
 
     # ------------------------------------------------------------------
     # Bindings & Tracking Subscriptions
@@ -361,6 +414,25 @@ class Repository:
         )
         return [_row_to_tracked(r) for r in rows]
 
+    def list_related_tracked_account_ids(self, realm: Realm, account_id: int) -> list[int]:
+        """Return other tracked account IDs sharing a subscribed channel/guild or clan."""
+        rows = self.db.query(
+            """
+            SELECT DISTINCT ts2.account_id
+            FROM tracked_subscriptions ts1
+            JOIN tracked_subscriptions ts2
+              ON ts2.realm = ts1.realm
+             AND (ts2.channel_id = ts1.channel_id OR ts2.guild_id = ts1.guild_id)
+            WHERE ts1.realm = ?
+              AND ts1.account_id = ?
+              AND ts1.enabled = 1
+              AND ts2.enabled = 1
+              AND ts2.account_id != ?
+            """,
+            [realm, account_id, account_id],
+        )
+        return [int(r["account_id"]) for r in rows]
+
     def get_tracked_account(self, realm: Realm, account_id: int) -> TrackedAccount | None:
         rows = self.db.query(
             """
@@ -432,72 +504,107 @@ class Repository:
         snapshots: dict[int, dict[str, Any]],
         *,
         last_battle_time: int,
+        old_snapshots: dict[int, dict[str, Any]] | None = None,
         nickname: str | None = None,
         clan_id: int | None = None,
         clan_tag: str | None = None,
         mark_seeded: bool = True,
+        daily_snapshot_date: str | None = None,
     ) -> None:
         now = int(time.time())
         with self.db.transaction() as tx:
-            for ship_id, stats in snapshots.items():
-                tx.execute(
-                    """
-                    INSERT INTO ship_snapshots (realm, account_id, ship_id, stats_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(realm, account_id, ship_id) DO UPDATE SET
-                        stats_json = excluded.stats_json,
-                        updated_at = excluded.updated_at
-                    """,
-                    [realm, account_id, ship_id, json.dumps(stats, separators=(",", ":")), now],
-                )
-            tx.execute(
-                """
-                UPDATE tracked_accounts
-                SET nickname = COALESCE(?, nickname),
-                    clan_id = COALESCE(?, clan_id),
-                    clan_tag = COALESCE(?, clan_tag),
-                    last_battle_time = MAX(last_battle_time, ?),
-                    last_polled_at = ?,
-                    baseline_seeded = CASE WHEN ? = 1 THEN 1 ELSE baseline_seeded END
-                WHERE realm = ? AND account_id = ?
-                """,
-                [
-                    nickname,
-                    clan_id,
-                    clan_tag,
-                    last_battle_time,
-                    now,
-                    int(mark_seeded),
-                    realm,
-                    account_id,
-                ],
+            self._write_snapshots_in_tx(
+                tx,
+                realm=realm,
+                account_id=account_id,
+                snapshots=snapshots,
+                old_snapshots=old_snapshots,
+                last_battle_time=last_battle_time,
+                nickname=nickname,
+                clan_id=clan_id,
+                clan_tag=clan_tag,
+                mark_seeded=mark_seeded,
+                daily_snapshot_date=daily_snapshot_date,
+                now=now,
             )
 
-    def upsert_daily_snapshot(
+    def _write_snapshots_in_tx(
         self,
+        tx,
+        *,
         realm: Realm,
         account_id: int,
-        snapshot_date: str,
-        summary: dict[str, Any],
-        ships: dict[int, dict[str, Any]],
+        snapshots: dict[int, dict[str, Any]],
+        old_snapshots: dict[int, dict[str, Any]] | None,
+        last_battle_time: int,
+        nickname: str | None,
+        clan_id: int | None,
+        clan_tag: str | None,
+        mark_seeded: bool,
+        daily_snapshot_date: str | None,
+        now: int,
     ) -> None:
-        now = int(time.time())
-        with self.db.transaction() as tx:
+        for ship_id, stats in snapshots.items():
+            if old_snapshots is not None and old_snapshots.get(ship_id) == stats:
+                continue
             tx.execute(
                 """
-                INSERT INTO daily_snapshots (realm, account_id, snapshot_date, summary_json, ships_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(realm, account_id, snapshot_date) DO NOTHING
+                INSERT INTO ship_snapshots (realm, account_id, ship_id, stats_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(realm, account_id, ship_id) DO UPDATE SET
+                    stats_json = excluded.stats_json,
+                    updated_at = excluded.updated_at
                 """,
-                [
-                    realm,
-                    account_id,
-                    snapshot_date,
-                    json.dumps(summary, separators=(",", ":")),
-                    json.dumps(ships, separators=(",", ":")),
-                    now,
-                ],
+                [realm, account_id, ship_id, json.dumps(stats, separators=(",", ":")), now],
             )
+        tx.execute(
+            """
+            UPDATE tracked_accounts
+            SET nickname = COALESCE(?, nickname),
+                clan_id = COALESCE(?, clan_id),
+                clan_tag = COALESCE(?, clan_tag),
+                last_battle_time = MAX(last_battle_time, ?),
+                last_polled_at = ?,
+                baseline_seeded = CASE WHEN ? = 1 THEN 1 ELSE baseline_seeded END,
+                hidden_profile = 0
+            WHERE realm = ? AND account_id = ?
+            """,
+            [
+                nickname,
+                clan_id,
+                clan_tag,
+                last_battle_time,
+                now,
+                int(mark_seeded),
+                realm,
+                account_id,
+            ],
+        )
+        if daily_snapshot_date:
+            exists = tx.query(
+                """
+                SELECT 1 AS ok FROM daily_snapshots
+                WHERE realm = ? AND account_id = ? AND snapshot_date = ?
+                """,
+                [realm, account_id, daily_snapshot_date],
+            )
+            if not exists:
+                tx.execute(
+                    """
+                    INSERT INTO daily_snapshots (
+                        realm, account_id, snapshot_date, summary_json, ships_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(realm, account_id, snapshot_date) DO NOTHING
+                    """,
+                    [
+                        realm,
+                        account_id,
+                        daily_snapshot_date,
+                        json.dumps({"last_battle_time": last_battle_time}, separators=(",", ":")),
+                        json.dumps(snapshots, separators=(",", ":")),
+                        now,
+                    ],
+                )
 
     def get_daily_snapshot_on_or_before(
         self, realm: Realm, account_id: int, target_date: str
@@ -531,21 +638,92 @@ class Repository:
         }
 
     # ------------------------------------------------------------------
-    # Atomic Battle Recording + Division/Squad Coalescing + Honker Outbox
+    # Atomic Snapshot + Battle Recording + Division Coalescing + Honker Outbox
     # ------------------------------------------------------------------
+    def commit_player_poll_and_coalesce(
+        self,
+        *,
+        realm: Realm,
+        account_id: int,
+        new_snapshots: dict[int, dict[str, Any]],
+        old_snapshots: dict[int, dict[str, Any]],
+        deltas: list[BattleRecordInput],
+        last_battle_time: int,
+        nickname: str | None = None,
+        clan_id: int | None = None,
+        clan_tag: str | None = None,
+        daily_snapshot_date: str | None = None,
+        time_tolerance_s: int = 20,
+        recheck_delay_s: int = 12,
+        finalize_delay_s: int = 40,
+        enqueue_jobs: bool = True,
+    ) -> list[CoalesceOutcome]:
+        """Atomically persist changed snapshots, daily baseline, battle records,
+        division coalescing, and Honker outbox jobs in ONE SQLite WAL transaction.
+        """
+        now = int(time.time())
+        outcomes: list[CoalesceOutcome] = []
+        with self.db.transaction() as tx:
+            self._write_snapshots_in_tx(
+                tx,
+                realm=realm,
+                account_id=account_id,
+                snapshots=new_snapshots,
+                old_snapshots=old_snapshots,
+                last_battle_time=last_battle_time,
+                nickname=nickname,
+                clan_id=clan_id,
+                clan_tag=clan_tag,
+                mark_seeded=True,
+                daily_snapshot_date=daily_snapshot_date,
+                now=now,
+            )
+            for rec in deltas:
+                outcomes.append(
+                    self._record_battle_in_tx(
+                        tx,
+                        rec,
+                        now=now,
+                        time_tolerance_s=time_tolerance_s,
+                        recheck_delay_s=recheck_delay_s,
+                        finalize_delay_s=finalize_delay_s,
+                        enqueue_jobs=enqueue_jobs,
+                    )
+                )
+        return outcomes
+
     def record_battle_and_coalesce(
         self,
         record: BattleRecordInput,
         *,
         time_tolerance_s: int = 20,
         recheck_delay_s: int = 12,
-        finalize_delay_s: int = 28,
+        finalize_delay_s: int = 40,
         enqueue_jobs: bool = True,
     ) -> CoalesceOutcome:
-        """Atomically persist a battle record, coalesce divisions into 1 match_group,
-        and enqueue Honker jobs inside the exact same SQLite WAL transaction.
-        """
         now = int(time.time())
+        with self.db.transaction() as tx:
+            return self._record_battle_in_tx(
+                tx,
+                record,
+                now=now,
+                time_tolerance_s=time_tolerance_s,
+                recheck_delay_s=recheck_delay_s,
+                finalize_delay_s=finalize_delay_s,
+                enqueue_jobs=enqueue_jobs,
+            )
+
+    def _record_battle_in_tx(
+        self,
+        tx,
+        record: BattleRecordInput,
+        *,
+        now: int,
+        time_tolerance_s: int,
+        recheck_delay_s: int,
+        finalize_delay_s: int,
+        enqueue_jobs: bool,
+    ) -> CoalesceOutcome:
         is_win = 1 if (record.battles_delta > 0 and record.wins_delta >= record.battles_delta) else 0
         expected_div = 2 if record.battle_type == "pvp_div2" else (3 if record.battle_type == "pvp_div3" else 1)
         is_division = expected_div > 1 and record.battles_delta == 1
@@ -553,115 +731,143 @@ class Repository:
         match_q = self.dbm.match_queue
         render_q = self.dbm.render_queue
 
-        with self.db.transaction() as tx:
-            player_channels = {
-                str(r["channel_id"])
-                for r in tx.query(
-                    """
-                    SELECT channel_id FROM tracked_subscriptions
-                    WHERE realm = ? AND account_id = ? AND enabled = 1
-                    """,
-                    [record.realm, record.account_id],
+        sub_rows = tx.query(
+            """
+            SELECT guild_id, channel_id FROM tracked_subscriptions
+            WHERE realm = ? AND account_id = ? AND enabled = 1
+            """,
+            [record.realm, record.account_id],
+        )
+        player_channels = {str(r["channel_id"]) for r in sub_rows}
+        player_guilds = {str(r["guild_id"]) for r in sub_rows}
+
+        # Respect guild_settings.auto_group_divisions if disabled for all of this player's guilds
+        if is_division and player_guilds:
+            g_placeholders = ",".join("?" for _ in player_guilds)
+            gs_rows = tx.query(
+                f"SELECT auto_group_divisions FROM guild_settings WHERE guild_id IN ({g_placeholders})",
+                [*player_guilds],
+            )
+            if gs_rows and all(not bool(r["auto_group_divisions"]) for r in gs_rows):
+                is_division = False
+
+        chosen_group_id: int | None = None
+        current_members = 0
+
+        if is_division:
+            candidates = tx.query(
+                """
+                SELECT id, battle_time, min_tier, max_tier
+                FROM match_groups
+                WHERE status = 'collecting'
+                  AND realm = ?
+                  AND battle_type = ?
+                  AND is_win = ?
+                  AND ABS(battle_time - ?) <= ?
+                ORDER BY ABS(battle_time - ?) ASC, id ASC
+                """,
+                [
+                    record.realm,
+                    record.battle_type,
+                    is_win,
+                    record.battle_time,
+                    time_tolerance_s,
+                    record.battle_time,
+                ],
+            )
+
+            best_score = 0  # Require positive affinity (shared channel/guild or shared clan) to prevent cross-guild leaks!
+            for cand in candidates:
+                cand_id = int(cand["id"])
+                min_t = int(cand["min_tier"])
+                max_t = int(cand["max_tier"])
+
+                if record.ship_tier > 0 and min_t > 0:
+                    new_min = min(min_t, record.ship_tier)
+                    new_max = max(max_t, record.ship_tier)
+                    if new_max - new_min > 1:
+                        continue
+
+                members = tx.query(
+                    "SELECT account_id, clan_tag FROM battle_records WHERE match_group_id = ?",
+                    [cand_id],
                 )
-            }
+                member_ids = {int(m["account_id"]) for m in members}
+                if record.account_id in member_ids:
+                    continue
+                if len(member_ids) >= expected_div:
+                    continue
 
-            chosen_group_id: int | None = None
-            current_members = 0
-
-            if is_division:
-                candidates = tx.query(
-                    """
-                    SELECT id, battle_time, min_tier, max_tier
-                    FROM match_groups
-                    WHERE status = 'collecting'
-                      AND realm = ?
-                      AND battle_type = ?
-                      AND is_win = ?
-                      AND ABS(battle_time - ?) <= ?
-                    ORDER BY ABS(battle_time - ?) ASC, id ASC
-                    """,
-                    [
-                        record.realm,
-                        record.battle_type,
-                        is_win,
-                        record.battle_time,
-                        time_tolerance_s,
-                        record.battle_time,
-                    ],
-                )
-
-                best_score = -1
-                for cand in candidates:
-                    cand_id = int(cand["id"])
-                    min_t = int(cand["min_tier"])
-                    max_t = int(cand["max_tier"])
-
-                    if record.ship_tier > 0 and min_t > 0:
-                        new_min = min(min_t, record.ship_tier)
-                        new_max = max(max_t, record.ship_tier)
-                        if new_max - new_min > 1:
-                            continue
-
-                    members = tx.query(
-                        "SELECT account_id FROM battle_records WHERE match_group_id = ?",
-                        [cand_id],
+                score = 0
+                if member_ids:
+                    placeholders = ",".join("?" for _ in member_ids)
+                    member_subs = tx.query(
+                        f"""
+                        SELECT guild_id, channel_id FROM tracked_subscriptions
+                        WHERE realm = ? AND enabled = 1 AND account_id IN ({placeholders})
+                        """,
+                        [record.realm, *member_ids],
                     )
-                    member_ids = {int(m["account_id"]) for m in members}
-                    if record.account_id in member_ids:
-                        continue
-                    if len(member_ids) >= expected_div:
-                        continue
+                    member_channels = {str(r["channel_id"]) for r in member_subs}
+                    member_guilds = {str(r["guild_id"]) for r in member_subs}
 
-                    score = 0
-                    if player_channels and member_ids:
-                        placeholders = ",".join("?" for _ in member_ids)
-                        shared = tx.query(
-                            f"""
-                            SELECT DISTINCT channel_id FROM tracked_subscriptions
-                            WHERE realm = ? AND enabled = 1 AND account_id IN ({placeholders})
-                            """,
-                            [record.realm, *member_ids],
-                        )
-                        if any(str(r["channel_id"]) in player_channels for r in shared):
+                    if player_channels and member_channels:
+                        # If both players have active channel subscriptions, require same channel or same guild
+                        if player_channels & member_channels:
+                            score += 200
+                        elif player_guilds & member_guilds:
                             score += 100
+                        else:
+                            # Disjoint subscribed guilds -> NEVER merge strangers across guilds!
+                            continue
+                    elif not player_channels and not member_channels:
+                        # Neither has channel subscriptions (e.g. unit/local test) -> require matching clan tag
+                        member_clans = {str(m["clan_tag"]) for m in members if m["clan_tag"]}
+                        if record.clan_tag and record.clan_tag in member_clans:
+                            score += 50
+                        else:
+                            continue
+                    else:
+                        continue
 
-                    if score > best_score:
-                        best_score = score
-                        chosen_group_id = cand_id
-                        current_members = len(member_ids)
+                if score > best_score:
+                    best_score = score
+                    chosen_group_id = cand_id
+                    current_members = len(member_ids)
 
-            created_new = False
-            finalized_now = False
+        created_new = False
+        finalized_now = False
 
-            if chosen_group_id is None:
-                created_new = True
-                initial_status = "collecting" if is_division else "finalized"
-                finalized_at = None if is_division else now
-                tx.execute(
-                    """
-                    INSERT INTO match_groups (
-                        realm, battle_type, battle_time, is_win, expected_div_size,
-                        min_tier, max_tier, status, created_at, finalized_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        record.realm,
-                        record.battle_type,
-                        record.battle_time,
-                        is_win,
-                        expected_div,
-                        record.ship_tier,
-                        record.ship_tier,
-                        initial_status,
-                        now,
-                        finalized_at,
-                    ],
-                )
-                chosen_group_id = int(tx.query("SELECT last_insert_rowid() AS id")[0]["id"])
-                new_member_count = 1
-                finalized_now = not is_division
-            else:
-                new_member_count = current_members + 1
+        if chosen_group_id is None:
+            created_new = True
+            initial_status = "collecting" if is_division else "finalized"
+            finalized_at = None if is_division else now
+            tx.execute(
+                """
+                INSERT INTO match_groups (
+                    realm, battle_type, battle_time, is_win, expected_div_size,
+                    min_tier, max_tier, status, created_at, finalized_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    record.realm,
+                    record.battle_type,
+                    record.battle_time,
+                    is_win,
+                    expected_div,
+                    record.ship_tier,
+                    record.ship_tier,
+                    initial_status,
+                    now,
+                    finalized_at,
+                ],
+            )
+            chosen_group_id = int(tx.query("SELECT last_insert_rowid() AS id")[0]["id"])
+            new_member_count = 1
+            finalized_now = not is_division
+        else:
+            new_member_count = current_members + 1
+            if record.ship_tier > 0:
                 tx.execute(
                     """
                     UPDATE match_groups
@@ -671,74 +877,87 @@ class Repository:
                     """,
                     [record.ship_tier, record.ship_tier, record.ship_tier, chosen_group_id],
                 )
-                if new_member_count >= expected_div:
-                    tx.execute(
-                        """
-                        UPDATE match_groups
-                        SET status = 'finalized', finalized_at = ?
-                        WHERE id = ? AND status = 'collecting'
-                        """,
-                        [now, chosen_group_id],
-                    )
-                    finalized_now = True
+            if new_member_count >= expected_div:
+                tx.execute(
+                    """
+                    UPDATE match_groups
+                    SET status = 'finalized', finalized_at = ?
+                    WHERE id = ? AND status = 'collecting'
+                    """,
+                    [now, chosen_group_id],
+                )
+                finalized_now = True
 
-            tx.execute(
-                """
-                INSERT INTO battle_records (
-                    match_group_id, realm, account_id, nickname, clan_tag, ship_id, ship_tier,
-                    battle_type, battle_time, battles_delta, wins_delta, survived_delta,
-                    damage_delta, frags_delta, xp_delta, spotting_delta, potential_delta,
-                    planes_delta, main_hits_delta, main_shots_delta, pr_value, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    chosen_group_id,
-                    record.realm,
-                    record.account_id,
-                    record.nickname,
-                    record.clan_tag,
-                    record.ship_id,
-                    record.ship_tier,
-                    record.battle_type,
-                    record.battle_time,
-                    record.battles_delta,
-                    record.wins_delta,
-                    record.survived_delta,
-                    record.damage_delta,
-                    record.frags_delta,
-                    record.xp_delta,
-                    record.spotting_delta,
-                    record.potential_delta,
-                    record.planes_delta,
-                    record.main_hits_delta,
-                    record.main_shots_delta,
-                    record.pr_value,
-                    now,
-                ],
-            )
+        tx.execute(
+            """
+            INSERT INTO battle_records (
+                match_group_id, realm, account_id, nickname, clan_tag, ship_id, ship_tier,
+                battle_type, battle_time, battles_delta, wins_delta, survived_delta,
+                damage_delta, frags_delta, xp_delta, spotting_delta, potential_delta,
+                planes_delta, main_hits_delta, main_shots_delta, pr_value, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                chosen_group_id,
+                record.realm,
+                record.account_id,
+                record.nickname,
+                record.clan_tag,
+                record.ship_id,
+                record.ship_tier,
+                record.battle_type,
+                record.battle_time,
+                record.battles_delta,
+                record.wins_delta,
+                record.survived_delta,
+                record.damage_delta,
+                record.frags_delta,
+                record.xp_delta,
+                record.spotting_delta,
+                record.potential_delta,
+                record.planes_delta,
+                record.main_hits_delta,
+                record.main_shots_delta,
+                record.pr_value,
+                now,
+            ],
+        )
 
-            if enqueue_jobs:
-                if finalized_now and render_q is not None:
-                    render_q.enqueue(
-                        {"type": "render_and_post", "match_group_id": chosen_group_id},
-                        tx=tx,
-                    )
-                elif created_new and is_division and match_q is not None:
+        if enqueue_jobs:
+            if finalized_now and render_q is not None:
+                render_q.enqueue(
+                    {"type": "render_and_post", "match_group_id": chosen_group_id},
+                    tx=tx,
+                )
+            elif created_new and is_division and match_q is not None:
+                # Two staggered fast rechecks + finalize deadline so lagging squadmates are caught
+                match_q.enqueue(
+                    {
+                        "type": "fast_squad_recheck",
+                        "realm": record.realm,
+                        "match_group_id": chosen_group_id,
+                        "source_account_id": record.account_id,
+                    },
+                    tx=tx,
+                    delay=float(recheck_delay_s),
+                )
+                second_recheck = min(finalize_delay_s - 8, recheck_delay_s * 2 + 2)
+                if second_recheck > recheck_delay_s:
                     match_q.enqueue(
                         {
                             "type": "fast_squad_recheck",
                             "realm": record.realm,
                             "match_group_id": chosen_group_id,
-                            "exclude_account_id": record.account_id,
+                            "source_account_id": record.account_id,
                         },
                         tx=tx,
-                        delay=float(recheck_delay_s),
+                        delay=float(second_recheck),
                     )
-                    match_q.enqueue(
-                        {"type": "finalize_match_group", "match_group_id": chosen_group_id},
-                        tx=tx,
-                        delay=float(finalize_delay_s),
-                    )
+                match_q.enqueue(
+                    {"type": "finalize_match_group", "match_group_id": chosen_group_id},
+                    tx=tx,
+                    delay=float(finalize_delay_s),
+                )
 
         return CoalesceOutcome(
             match_group_id=chosen_group_id,
@@ -842,6 +1061,9 @@ class Repository:
         }
 
     def get_latest_match_group_for_account(self, realm: Realm, account_id: int) -> dict[str, Any] | None:
+        tracked = self.get_tracked_account(realm, account_id)
+        if tracked and tracked.hidden_profile:
+            return None
         rows = self.db.query(
             """
             SELECT match_group_id FROM battle_records
@@ -868,34 +1090,41 @@ class Repository:
         )
         return [(str(r["guild_id"]), str(r["channel_id"])) for r in rows]
 
-    def claim_delivery_slot(self, match_group_id: int, channel_id: str) -> bool:
-        """Idempotently claim a (match_group_id, channel_id) delivery slot."""
+    def claim_delivery_slot(
+        self, match_group_id: int, channel_id: str, *, lease_seconds: int = 180
+    ) -> bool:
+        """Idempotently claim a (match_group_id, channel_id) slot with stale-lease recovery."""
+        now = int(time.time())
         with self.db.transaction() as tx:
             existing = tx.query(
                 """
-                SELECT status FROM match_deliveries
+                SELECT status, claimed_at FROM match_deliveries
                 WHERE match_group_id = ? AND channel_id = ?
                 """,
                 [match_group_id, channel_id],
             )
-            if existing and existing[0]["status"] in ("sent", "sending"):
-                return False
             if existing:
+                status = existing[0]["status"]
+                claimed_at = int(existing[0]["claimed_at"] or 0)
+                if status == "sent":
+                    return False
+                if status == "sending" and (now - claimed_at) < lease_seconds:
+                    return False
                 tx.execute(
                     """
                     UPDATE match_deliveries
-                    SET status = 'sending', error = NULL
+                    SET status = 'sending', claimed_at = ?, error = NULL
                     WHERE match_group_id = ? AND channel_id = ?
                     """,
-                    [match_group_id, channel_id],
+                    [now, match_group_id, channel_id],
                 )
             else:
                 tx.execute(
                     """
-                    INSERT INTO match_deliveries (match_group_id, channel_id, status)
-                    VALUES (?, ?, 'sending')
+                    INSERT INTO match_deliveries (match_group_id, channel_id, status, claimed_at)
+                    VALUES (?, ?, 'sending', ?)
                     """,
-                    [match_group_id, channel_id],
+                    [match_group_id, channel_id, now],
                 )
         return True
 
@@ -1011,14 +1240,14 @@ class Repository:
         q = query.strip()
         if not q:
             return []
-        like = f"%{q}%"
+        like = f"%{_escape_like(q)}%"
         rows = self.db.query(
             """
             SELECT ship_id, name_en, name_zh, tier, ship_type, nation,
                    is_premium, is_special, icon_small, icon_medium, icon_large
             FROM encyclopedia_ships
             WHERE lower(name_en) = lower(?) OR lower(name_zh) = lower(?)
-               OR lower(name_en) LIKE lower(?) OR lower(name_zh) LIKE lower(?)
+               OR lower(name_en) LIKE lower(?) ESCAPE '\\' OR lower(name_zh) LIKE lower(?) ESCAPE '\\'
             ORDER BY
                 CASE WHEN lower(name_en) = lower(?) OR lower(name_zh) = lower(?) THEN 0 ELSE 1 END,
                 tier DESC,
@@ -1061,14 +1290,14 @@ class Repository:
         }
 
     def get_local_ship_leaderboard(self, realm: Realm, ship_id: int, limit: int = 15) -> list[dict[str, Any]]:
-        """Local tracked-player leaderboard fallback when Yuyuko public rank is unavailable/disabled."""
+        """Local tracked-player leaderboard fallback (excludes hidden profiles)."""
         rows = self.db.query(
             """
             SELECT ta.account_id, ta.nickname, ta.clan_tag, ss.stats_json
             FROM ship_snapshots ss
             JOIN tracked_accounts ta
               ON ta.realm = ss.realm AND ta.account_id = ss.account_id
-            WHERE ss.realm = ? AND ss.ship_id = ?
+            WHERE ss.realm = ? AND ss.ship_id = ? AND ta.hidden_profile = 0
             """,
             [realm, ship_id],
         )

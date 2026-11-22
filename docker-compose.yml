@@ -1,29 +1,42 @@
 # 1Panel-compatible Docker Compose template
-# Paste this into 1Panel -> Containers -> Compose, and put GAMEVOX_BOT_TOKEN & WG_APPLICATION_ID
-# into 1Panel's built-in "环境变量" box (or a local .env file when running docker compose locally).
+# Paste this into 1Panel -> Containers -> Compose, and set GAMEVOX_BOT_TOKEN & WG_APPLICATION_ID
+# (plus optional DEFAULT_GUILD_ID / DEFAULT_AUTO_POST_CHANNEL_ID / ADMIN_USER_IDS)
+# in 1Panel's built-in "环境变量" box.
 
 services:
   wows-gamevox-bot:
-    image: ghcr.io/ec061/yuyuko-discord:latest
+    image: ghcr.io/ec061/yuyuko-discord:${IMAGE_TAG:-latest}
     container_name: wows-gamevox-bot
     restart: unless-stopped
     init: true
     shm_size: "512m"
+    mem_limit: "1536m"
+    security_opt:
+      - no-new-privileges:true
     environment:
       GAMEVOX_BOT_TOKEN: ${GAMEVOX_BOT_TOKEN}
       WG_APPLICATION_ID: ${WG_APPLICATION_ID}
       GAMEVOX_API_BASE: ${GAMEVOX_API_BASE:-https://app-api.gamevox.com/api/v10}
       GAMEVOX_GATEWAY_URL: ${GAMEVOX_GATEWAY_URL:-wss://gateway.gamevox.com/?v=10&encoding=json}
-      DEFAULT_GUILD_ID: ${DEFAULT_GUILD_ID:-1487625003808419840}
-      DEFAULT_AUTO_POST_CHANNEL_ID: ${DEFAULT_AUTO_POST_CHANNEL_ID:-1574077276956221440}
+      DEFAULT_GUILD_ID: ${DEFAULT_GUILD_ID:-}
+      DEFAULT_AUTO_POST_CHANNEL_ID: ${DEFAULT_AUTO_POST_CHANNEL_ID:-}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
       DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-zh}
       DEFAULT_REALM: ${DEFAULT_REALM:-na}
       COMMAND_PREFIX: ${COMMAND_PREFIX:-wws}
       DATA_DIR: /data
       DB_PATH: /data/wows_bot.db
+      HONKER_WATCH_INTERVAL_MS: ${HONKER_WATCH_INTERVAL_MS:-25}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
+      SQUAD_RECHECK_DELAY_SECONDS: ${SQUAD_RECHECK_DELAY_SECONDS:-12}
+      SQUAD_FINALIZE_DELAY_SECONDS: ${SQUAD_FINALIZE_DELAY_SECONDS:-40}
+      SQUAD_TIME_TOLERANCE_SECONDS: ${SQUAD_TIME_TOLERANCE_SECONDS:-20}
       RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-2}
+      RENDER_IMAGE_FORMAT: ${RENDER_IMAGE_FORMAT:-png}
+      RENDER_TIMEOUT_SECONDS: ${RENDER_TIMEOUT_SECONDS:-30}
       ENABLE_YUYUKO_SHIP_RANK: ${ENABLE_YUYUKO_SHIP_RANK:-true}
+      YUYUKO_API_BASE: ${YUYUKO_API_BASE:-https://v3-api.wows.shinoaki.com}
+      WOWS_NUMBERS_PR_URL: ${WOWS_NUMBERS_PR_URL:-https://api.wows-numbers.com/personal/rating/expected/json/}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/data

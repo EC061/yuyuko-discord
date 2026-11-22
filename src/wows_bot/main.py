@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import logging
+import signal
+import sqlite3
 import sys
+import time
 
 from loguru import logger
 
@@ -21,21 +26,51 @@ from wows_bot.services.renderer import CardRenderer
 from wows_bot.services.worker import WorkerRunner
 
 
+class _InterceptHandler(logging.Handler):
+    """Forward stdlib logging (discord.py) to Loguru without leaking secrets."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+
+
+def _configure_logging(level: str) -> None:
+    logger.remove()
+    # diagnose=False prevents local variable values (e.g. tokens/keys) from appearing in tracebacks!
+    logger.add(sys.stderr, level=level, diagnose=False, backtrace=False)
+    logging.basicConfig(handlers=[_InterceptHandler()], level=logging.WARNING, force=True)
+    logging.getLogger("discord").setLevel(logging.INFO)
+    # Never log httpx request URLs (which contain WG application_id query params)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 def _run_healthcheck(settings: Settings) -> int:
-    dbm = DatabaseManager(settings.resolved_db_path, settings.honker_watch_interval_ms)
+    """Lightweight read-only SQLite healthcheck (never runs DDL or acquires write locks)."""
+    db_path = settings.resolved_db_path
+    if not db_path.exists():
+        return 1
     try:
-        dbm.open()
-        mode = dbm.db.query("PRAGMA journal_mode")[0]["journal_mode"]
-        if str(mode).lower() != "wal":
-            return 1
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3.0)
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()
+            if not mode or str(mode[0]).lower() != "wal":
+                return 1
+            row = conn.execute("SELECT updated_at FROM metadata WHERE key = 'heartbeat'").fetchone()
+            if row is not None and (time.time() - int(row[0])) > 180:
+                return 1
+        finally:
+            conn.close()
         return 0
-    finally:
-        dbm.close()
+    except sqlite3.Error:
+        return 1
 
 
 async def run_app(settings: Settings) -> None:
-    logger.remove()
-    logger.add(sys.stderr, level=settings.log_level.upper())
+    _configure_logging(settings.log_level)
 
     if not settings.gamevox_bot_token:
         raise RuntimeError("GAMEVOX_BOT_TOKEN is required to start the GameVox bot")
@@ -67,9 +102,11 @@ async def run_app(settings: Settings) -> None:
             poller=poller,
             renderer=renderer,
             deliver_image=bot.deliver_image,
+            is_gateway_healthy=bot.is_gateway_healthy,
         )
         worker.start()
         worker_holder["worker"] = worker
+        repo.touch_heartbeat("ready")
 
     bot = WoWSGameVoxBot(
         settings=settings,
@@ -80,6 +117,11 @@ async def run_app(settings: Settings) -> None:
         i18n=i18n,
         on_ready_hook=on_bot_ready,
     )
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(bot.close()))
 
     try:
         await bot.start(settings.gamevox_bot_token)
@@ -95,7 +137,7 @@ async def run_app(settings: Settings) -> None:
 
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Self-hosted WoWS GameVox Bot")
-    parser.add_argument("--healthcheck", action="store_true", help="Verify SQLite WAL + Honker DB")
+    parser.add_argument("--healthcheck", action="store_true", help="Verify SQLite WAL + heartbeat")
     args = parser.parse_args()
 
     settings = Settings()

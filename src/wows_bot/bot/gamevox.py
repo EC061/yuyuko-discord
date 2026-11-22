@@ -5,9 +5,12 @@ from __future__ import annotations
 import io
 import random
 import re
+import time
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import discord
+import yarl
 from loguru import logger
 
 from wows_bot.clients.wg_api import WGApiClient, WGApiError
@@ -26,12 +29,156 @@ from wows_bot.services.stats_builder import (
 )
 
 MENTION_RE = re.compile(r"<@!?(\d+)>")
+_GAMEVOX_PATCHED = False
+
+
+def _sanitize_echo(text: str, max_len: int = 80) -> str:
+    """Strip backticks, newlines, and control chars before echoing user input in chat."""
+    cleaned = text.replace("`", "").replace("\r", " ").replace("\n", " ").strip()
+    return cleaned[:max_len]
 
 
 def patch_discord_for_gamevox(settings: Settings) -> None:
-    """Point discord.py REST + Gateway endpoints to GameVox (Discord API v10)."""
+    """Point discord.py REST + Gateway endpoints to GameVox (Discord API v10)
+    and apply defensive payload compatibility shims for fields GameVox omits.
+    """
+    global _GAMEVOX_PATCHED
     discord.http.Route.BASE = settings.gamevox_api_base.rstrip("/")
-    discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY = settings.gamevox_gateway_url
+    discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY = yarl.URL(settings.gamevox_gateway_url)
+
+    if not _GAMEVOX_PATCHED:
+        # 1. AppInfo: GameVox omits `owner` and may omit optional metadata fields
+        orig_appinfo_init = discord.AppInfo.__init__
+
+        def _compat_appinfo_init(self, state, data):
+            if isinstance(data, dict):
+                patched = {
+                    "description": "",
+                    "icon": None,
+                    "bot_public": False,
+                    "bot_require_code_grant": False,
+                    "verify_key": "",
+                    **data,
+                }
+                if not patched.get("owner"):
+                    patched["owner"] = {
+                        "id": str(patched.get("id") or "0"),
+                        "username": str(patched.get("name") or "gamevox_owner"),
+                        "discriminator": "0",
+                        "avatar": None,
+                    }
+                data = patched
+            return orig_appinfo_init(self, state, data)
+
+        discord.AppInfo.__init__ = _compat_appinfo_init  # type: ignore[method-assign]
+
+        # 2. Channels: GameVox voice/text/category/forum channels can omit bitrate, user_limit, position
+        from discord.channel import CategoryChannel, ForumChannel, TextChannel, VocalGuildChannel
+
+        orig_vocal_update = VocalGuildChannel._update
+
+        def _compat_vocal_update(self, guild, data):
+            if isinstance(data, dict):
+                data = {"bitrate": 64000, "user_limit": 0, "position": 0, **data}
+                if data.get("position") is None:
+                    data["position"] = 0
+                if data.get("bitrate") is None:
+                    data["bitrate"] = 64000
+                if data.get("user_limit") is None:
+                    data["user_limit"] = 0
+            return orig_vocal_update(self, guild, data)
+
+        VocalGuildChannel._update = _compat_vocal_update  # type: ignore[method-assign]
+
+        for ch_cls in (TextChannel, CategoryChannel, ForumChannel):
+            orig_ch_update = ch_cls._update
+
+            def _make_ch_update(orig_fn):
+                def _compat_ch_update(self, guild, data):
+                    if isinstance(data, dict) and data.get("position") is None:
+                        data = {**data, "position": 0}
+                    return orig_fn(self, guild, data)
+
+                return _compat_ch_update
+
+            ch_cls._update = _make_ch_update(orig_ch_update)  # type: ignore[method-assign]
+
+        # 3. BaseUser / Member: defensively default discriminator, avatar, roles, flags
+        from discord.member import Member
+        from discord.user import BaseUser
+
+        orig_user_update = BaseUser._update
+
+        def _compat_user_update(self, data):
+            if isinstance(data, dict):
+                data = {"discriminator": "0", "avatar": None, **data}
+            return orig_user_update(self, data)
+
+        BaseUser._update = _compat_user_update  # type: ignore[method-assign]
+
+        orig_member_init = Member.__init__
+
+        def _compat_member_init(self, *, data, guild, state):
+            if isinstance(data, dict):
+                data = {"roles": [], "flags": 0, **data}
+                if data.get("flags") is None:
+                    data["flags"] = 0
+                if data.get("roles") is None:
+                    data["roles"] = []
+            return orig_member_init(self, data=data, guild=guild, state=state)
+
+        Member.__init__ = _compat_member_init  # type: ignore[method-assign]
+
+        # 4. Message & Attachment: prevent KeyError AFTER an image is already posted (avoids duplicate retries!)
+        orig_msg_init = discord.Message.__init__
+
+        def _compat_msg_init(self, *, state, channel, data):
+            if isinstance(data, dict):
+                data = {"type": 0, "content": "", **data}
+                if data.get("content") is None:
+                    data["content"] = ""
+                if data.get("type") is None:
+                    data["type"] = 0
+            return orig_msg_init(self, state=state, channel=channel, data=data)
+
+        discord.Message.__init__ = _compat_msg_init  # type: ignore[method-assign]
+
+        orig_att_init = discord.Attachment.__init__
+
+        def _compat_att_init(self, *, data, state):
+            if isinstance(data, dict):
+                url_val = str(data.get("url") or "")
+                data = {
+                    "size": 0,
+                    "filename": "image.png",
+                    "url": url_val,
+                    "proxy_url": data.get("proxy_url") or url_val,
+                    **data,
+                }
+                if not data.get("proxy_url"):
+                    data["proxy_url"] = url_val
+            return orig_att_init(self, data=data, state=state)
+
+        discord.Attachment.__init__ = _compat_att_init  # type: ignore[method-assign]
+
+        # 5. READY payload: ensure resume_gateway_url & application.flags exist
+        from discord.state import ConnectionState
+
+        orig_parse_ready = ConnectionState.parse_ready
+
+        def _compat_parse_ready(self, data):
+            if isinstance(data, dict):
+                if not data.get("resume_gateway_url"):
+                    data = {**data, "resume_gateway_url": str(discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY)}
+                app = data.get("application")
+                if isinstance(app, dict) and app.get("flags") is None:
+                    data = {**data, "application": {**app, "flags": 0}}
+            return orig_parse_ready(self, data)
+
+        ConnectionState.parse_ready = _compat_parse_ready  # type: ignore[method-assign]
+
+        _GAMEVOX_PATCHED = True
+
     logger.info(
         "Patched discord.py endpoints -> REST={}, Gateway={}",
         discord.http.Route.BASE,
@@ -55,7 +202,12 @@ class WoWSGameVoxBot(discord.Client):
         intents.guilds = True
         intents.guild_messages = True
         intents.message_content = True
-        super().__init__(intents=intents)
+        super().__init__(
+            intents=intents,
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=False, replied_user=True
+            ),
+        )
 
         self.settings = settings
         self.repo = repo
@@ -65,18 +217,62 @@ class WoWSGameVoxBot(discord.Client):
         self.i18n = i18n
         self._on_ready_hook = on_ready_hook
         self._ready_once = False
+        self._bot_mention_re: re.Pattern[str] | None = None
+        self._cooldowns: dict[str, float] = {}
+
+    def is_gateway_healthy(self) -> bool:
+        return not self.is_closed() and self.is_ready()
 
     async def on_ready(self) -> None:
         logger.info("GameVox bot logged in as {} (id={})", self.user, getattr(self.user, "id", None))
+        if self.user is not None:
+            self._bot_mention_re = re.compile(rf"^<@!?{self.user.id}>\s*")
         if self.settings.default_guild_id and self.settings.default_auto_post_channel_id:
-            self.repo.upsert_guild_settings(
+            self.repo.seed_guild_auto_post_channel_if_unset(
                 self.settings.default_guild_id,
-                auto_post_channel_id=self.settings.default_auto_post_channel_id,
+                self.settings.default_auto_post_channel_id,
+                default_lang=self.settings.default_language,
             )
-        if not self._ready_once:
+        if not self._ready_once and self._on_ready_hook is not None:
+            await self._on_ready_hook()
             self._ready_once = True
-            if self._on_ready_hook is not None:
-                await self._on_ready_hook()
+
+    def _is_guild_admin(self, message: discord.Message) -> bool:
+        user_id = str(message.author.id)
+        if user_id in self.settings.admin_user_id_set:
+            return True
+        if message.guild is None:
+            return False
+        if message.guild.owner_id is not None and message.author.id == message.guild.owner_id:
+            return True
+        if isinstance(message.author, discord.Member):
+            perms = message.author.guild_permissions
+            return bool(perms.administrator or perms.manage_guild or perms.manage_channels)
+        return False
+
+    def _check_cooldown(self, user_id: str) -> float:
+        now = time.monotonic()
+        last = self._cooldowns.get(user_id, 0.0)
+        remaining = self.settings.command_cooldown_seconds - (now - last)
+        if remaining > 0:
+            return remaining
+        self._cooldowns[user_id] = now
+        return 0.0
+
+    async def _safe_reply(
+        self,
+        message: discord.Message,
+        content: str | None = None,
+        *,
+        file: discord.File | None = None,
+    ) -> None:
+        try:
+            ref = message.to_reference(fail_if_not_exists=False)
+            await message.channel.send(content=content, file=file, reference=ref)
+        except discord.HTTPException:
+            if file is not None:
+                file.fp.seek(0)
+            await message.channel.send(content=content, file=file)
 
     async def deliver_image(self, channel_id: str, image_bytes: bytes, filename: str) -> str | None:
         """Send a rendered PNG/JPEG stat card to a GameVox text channel."""
@@ -85,22 +281,22 @@ class WoWSGameVoxBot(discord.Client):
         if channel is None:
             channel = await self.fetch_channel(cid)
         if not isinstance(channel, discord.abc.Messageable):
-            raise RuntimeError(f"Channel {channel_id} is not messageable")
+            raise TypeError(f"Channel {channel_id} is not messageable")
         msg = await channel.send(file=discord.File(io.BytesIO(image_bytes), filename=filename))
         return str(msg.id)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
+        if self.user is not None and message.author.id == self.user.id:
+            return
         content = (message.content or "").strip()
         if not content:
             return
 
         prefix = self.settings.command_prefix.lower()
-        # Strip leading @bot mention if user @mentioned the bot
-        if self.user is not None:
-            bot_mention_re = re.compile(rf"^<@!?{self.user.id}>\s*")
-            content = bot_mention_re.sub("", content).strip()
+        if self._bot_mention_re is not None:
+            content = self._bot_mention_re.sub("", content).strip()
 
         lowered = content.lower()
         if not (lowered == prefix or lowered.startswith(prefix + " ")):
@@ -115,89 +311,118 @@ class WoWSGameVoxBot(discord.Client):
             fallback=self.settings.default_language,
         )
 
-        # Resolve @other_user mentions into target_user_id
-        target_user_id = user_id
+        # Resolve optional @mention ONLY for read/admin commands
+        mentioned_user_id: str | None = None
         mention_match = MENTION_RE.search(raw_args)
         if mention_match:
-            target_user_id = mention_match.group(1)
+            mentioned_user_id = mention_match.group(1)
             raw_args = MENTION_RE.sub("", raw_args).strip()
 
         try:
-            await self._dispatch(message, raw_args, user_id, target_user_id, guild_id, lang)
+            await self._dispatch(message, raw_args, user_id, mentioned_user_id, guild_id, lang)
         except WGApiError as exc:
             if "WG_APPLICATION_ID" in str(exc):
-                await message.reply(self.i18n.t("bot.wg_key_missing", lang=lang))
+                await self._safe_reply(message, self.i18n.t("bot.wg_key_missing", lang=lang))
             else:
-                await message.reply(self.i18n.t("bot.error_generic", lang=lang, error=str(exc)))
+                err_id = uuid.uuid4().hex[:8]
+                logger.warning("WG API error [{}]: {}", err_id, exc)
+                await self._safe_reply(message, self.i18n.t("bot.error_generic", lang=lang, error_id=err_id))
         except Exception as exc:
-            logger.exception("Command failed for '{}': {}", content, exc)
-            await message.reply(self.i18n.t("bot.error_generic", lang=lang, error=str(exc)))
+            err_id = uuid.uuid4().hex[:8]
+            logger.exception("Command failed [{}] ({})", err_id, type(exc).__name__)
+            await self._safe_reply(message, self.i18n.t("bot.error_generic", lang=lang, error_id=err_id))
 
     async def _send_image_reply(
-        self, message: discord.Message, image_bytes: bytes, filename: str
+        self, message: discord.Message, image_bytes: bytes, stem: str
     ) -> None:
-        await message.reply(file=discord.File(io.BytesIO(image_bytes), filename=filename))
+        filename = f"{stem}.{self.settings.image_file_ext}"
+        await self._safe_reply(message, file=discord.File(io.BytesIO(image_bytes), filename=filename))
 
     async def _dispatch(
         self,
         message: discord.Message,
         raw_args: str,
         user_id: str,
-        target_user_id: str,
+        mentioned_user_id: str | None,
         guild_id: str | None,
         lang: Language,
     ) -> None:
         prefix = self.settings.command_prefix
         tokens = raw_args.split()
         if not tokens or tokens[0].lower() in ("help", "帮助"):
-            await message.reply(self.i18n.t("bot.help_text", lang=lang, prefix=prefix))
+            await self._safe_reply(message, self.i18n.t("bot.help_text", lang=lang, prefix=prefix))
             return
 
         cmd = tokens[0].lower()
         rest = tokens[1:]
 
-        # --- Language ---
+        # --- Language (personal for anyone; `server` requires guild admin) ---
         if cmd in ("lang", "language", "语言"):
             if not rest or rest[0].lower() not in ("zh", "en"):
-                await message.reply(self.i18n.t("bot.lang_invalid", lang=lang))
+                await self._safe_reply(message, self.i18n.t("bot.lang_invalid", lang=lang))
                 return
             new_lang: Language = rest[0].lower()  # type: ignore[assignment]
-            updated = self.repo.set_user_language(user_id, new_lang)
-            if not updated and guild_id or guild_id and len(rest) > 1 and rest[1].lower() == "server":
-                self.repo.upsert_guild_settings(guild_id, default_lang=new_lang)
-            await message.reply(self.i18n.t("bot.lang_set", lang=new_lang))
+            if len(rest) > 1 and rest[1].lower() in ("server", "guild", "服务器"):
+                if not self._is_guild_admin(message) or not guild_id:
+                    await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
+                    return
+                self.repo.upsert_guild_settings(
+                    guild_id, default_lang=new_lang, fallback_lang=self.settings.default_language
+                )
+                await self._safe_reply(message, self.i18n.t("bot.lang_server_set", lang=new_lang))
+                return
+            self.repo.set_user_language(user_id, new_lang)
+            await self._safe_reply(message, self.i18n.t("bot.lang_set", lang=new_lang))
             return
 
-        # --- Set default auto-post channel ---
+        # --- Set default auto-post channel (admin only) ---
         if cmd in ("channel", "setchannel", "设置频道"):
-            if guild_id:
-                self.repo.upsert_guild_settings(guild_id, auto_post_channel_id=str(message.channel.id))
-                await message.reply(self.i18n.t("bot.channel_set", lang=lang))
+            if not guild_id or not self._is_guild_admin(message):
+                await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
+                return
+            self.repo.upsert_guild_settings(
+                guild_id,
+                auto_post_channel_id=str(message.channel.id),
+                fallback_lang=self.settings.default_language,
+            )
+            await self._safe_reply(message, self.i18n.t("bot.channel_set", lang=lang))
             return
 
-        # --- Bind account ---
+        # --- Bind account (always binds caller's own GameVox user_id) ---
         if cmd in ("bind", "绑定"):
             if len(rest) < 2:
-                await message.reply(self.i18n.t("bot.bind_missing_args", lang=lang, prefix=prefix))
+                await self._safe_reply(message, self.i18n.t("bot.bind_missing_args", lang=lang, prefix=prefix))
                 return
             realm = normalize_realm(rest[0])
             if realm is None:
-                await message.reply(self.i18n.t("bot.bind_missing_args", lang=lang, prefix=prefix))
+                await self._safe_reply(message, self.i18n.t("bot.bind_missing_args", lang=lang, prefix=prefix))
                 return
             nick = " ".join(rest[1:]).strip()
             matches = await self.wg.search_account(realm, nick, limit=5)
             exact = next((m for m in matches if str(m.get("nickname", "")).lower() == nick.lower()), None)
             chosen = exact or (matches[0] if matches else None)
             if not chosen:
-                await message.reply(
-                    self.i18n.t("bot.bind_not_found", lang=lang, realm=self.i18n.t(f"realms.{realm}", lang=lang), nickname=nick)
+                await self._safe_reply(
+                    message,
+                    self.i18n.t(
+                        "bot.bind_not_found",
+                        lang=lang,
+                        realm=self.i18n.t(f"realms.{realm}", lang=lang),
+                        nickname=_sanitize_echo(nick),
+                    ),
                 )
                 return
 
             aid = int(chosen["account_id"])
             real_nick = str(chosen["nickname"])
-            gs = self.repo.get_guild_settings(guild_id) if guild_id else {}
-            auto_ch = gs.get("auto_post_channel_id") or self.settings.default_auto_post_channel_id or str(message.channel.id)
+            gs = self.repo.get_guild_settings(guild_id) if guild_id else None
+            # Only apply deployment-wide default channel when guild matches default_guild_id!
+            default_ch = (
+                self.settings.default_auto_post_channel_id
+                if guild_id and guild_id == self.settings.default_guild_id
+                else None
+            )
+            auto_ch = (gs["auto_post_channel_id"] if gs else None) or default_ch
 
             self.repo.bind_account(
                 gamevox_user_id=user_id,
@@ -207,30 +432,45 @@ class WoWSGameVoxBot(discord.Client):
                 guild_id=guild_id,
                 auto_post_channel_id=auto_ch if guild_id else None,
             )
-            # Trigger immediate baseline seed job in Honker poll queue
             if self.repo.dbm.poll_queue is not None:
                 self.repo.dbm.poll_queue.enqueue(
                     {"type": "fetch_player_diff", "realm": realm, "account_id": aid, "nickname": real_nick}
                 )
-            await message.reply(
+            await self._safe_reply(
+                message,
                 self.i18n.t(
                     "bot.bind_success",
                     lang=lang,
                     realm=self.i18n.t(f"realms.{realm}", lang=lang),
                     nickname=real_nick,
                     account_id=aid,
-                )
+                ),
             )
             return
 
-        # --- Toggle auto-post tracking in current channel ---
+        # --- Toggle auto-post tracking (cross-user requires guild admin) ---
         if cmd in ("track", "追踪", "推送"):
-            binding = self.repo.get_default_binding(target_user_id)
+            if mentioned_user_id and mentioned_user_id != user_id and not self._is_guild_admin(message):
+                await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
+                return
+            target_uid = mentioned_user_id or user_id
+            binding = self.repo.get_default_binding(target_uid)
             if binding is None:
-                await message.reply(self.i18n.t("bot.not_bound", lang=lang, prefix=prefix))
+                await self._safe_reply(message, self.i18n.t("bot.not_bound", lang=lang, prefix=prefix))
                 return
             enabled = not (rest and rest[0].lower() in ("off", "0", "false", "关", "关闭"))
             if guild_id:
+                # Non-admins can only toggle tracking in the guild's designated auto-post channel (if set)
+                gs = self.repo.get_guild_settings(guild_id)
+                designated_ch = gs["auto_post_channel_id"] if gs else None
+                if (
+                    enabled
+                    and designated_ch
+                    and str(message.channel.id) != str(designated_ch)
+                    and not self._is_guild_admin(message)
+                ):
+                    await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
+                    return
                 self.repo.set_subscription(
                     realm=binding.realm,
                     account_id=binding.account_id,
@@ -241,47 +481,60 @@ class WoWSGameVoxBot(discord.Client):
                     enabled=enabled,
                 )
             key = "bot.track_enabled" if enabled else "bot.track_disabled"
-            await message.reply(
+            await self._safe_reply(
+                message,
                 self.i18n.t(
                     key,
                     lang=lang,
                     realm=self.i18n.t(f"realms.{binding.realm}", lang=lang),
                     nickname=binding.nickname,
-                )
+                ),
             )
             return
 
+        # --- Heavy / render commands: apply per-user cooldown ---
+        remaining = self._check_cooldown(user_id)
+        if remaining > 0:
+            await self._safe_reply(
+                message, self.i18n.t("bot.cooldown_active", lang=lang, seconds=max(1, int(round(remaining))))
+            )
+            return
+
+        read_target_uid = mentioned_user_id or user_id
+
         # --- Last single battle / division match ---
         if cmd in ("last", "recents", "单局", "单场近期"):
-            resolved = await self._resolve_target_account(rest, target_user_id, lang)
+            resolved = await self._resolve_target_account(rest, read_target_uid, lang)
             if isinstance(resolved, str):
-                await message.reply(resolved)
+                await self._safe_reply(message, resolved)
                 return
             realm, aid, nick = resolved
             group = self.repo.get_latest_match_group_for_account(realm, aid)
             if not group:
-                await message.reply(self.i18n.t("bot.no_last_match", lang=lang, nickname=nick))
+                await self._safe_reply(message, self.i18n.t("bot.no_last_match", lang=lang, nickname=nick))
                 return
             ships_meta = self.repo.get_ships_map([r["ship_id"] for r in group["records"]])
             img = await self.renderer.render_match_group(group, ships_meta, lang=lang)
-            await self._send_image_reply(message, img, f"match_{group['id']}.png")
+            await self._send_image_reply(message, img, f"match_{group['id']}")
             return
 
         # --- Daily recent ---
         if cmd in ("recent", "近期"):
             days = 7
-            remaining = list(rest)
-            if remaining and remaining[-1].isdigit():
-                days = max(1, min(90, int(remaining.pop())))
-            resolved = await self._resolve_target_account(remaining, target_user_id, lang)
+            remaining_toks = list(rest)
+            if remaining_toks and remaining_toks[-1].isdigit():
+                days = max(1, min(90, int(remaining_toks.pop())))
+            resolved = await self._resolve_target_account(remaining_toks, read_target_uid, lang)
             if isinstance(resolved, str):
-                await message.reply(resolved)
+                await self._safe_reply(message, resolved)
                 return
             realm, aid, nick = resolved
             since_date = (datetime.now(tz=UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
             baseline = self.repo.get_daily_snapshot_on_or_before(realm, aid, since_date)
             if baseline is None:
-                await message.reply(self.i18n.t("bot.no_recent_data", lang=lang, nickname=nick, days=days))
+                await self._safe_reply(
+                    message, self.i18n.t("bot.no_recent_data", lang=lang, nickname=nick, days=days)
+                )
                 return
             raw_ships = await self.wg.get_account_ships_stats(realm, aid)
             cur_snaps = {int(e["ship_id"]): compact_ship_snapshot(e) for e in raw_ships if e.get("ship_id")}
@@ -302,27 +555,28 @@ class WoWSGameVoxBot(discord.Client):
                 lang=lang,
             )
             if view is None:
-                await message.reply(self.i18n.t("bot.no_recent_data", lang=lang, nickname=nick, days=days))
+                await self._safe_reply(
+                    message, self.i18n.t("bot.no_recent_data", lang=lang, nickname=nick, days=days)
+                )
                 return
             img = await self.renderer.render_recent_summary(view, lang=lang)
-            await self._send_image_reply(message, img, f"recent_{aid}_{days}d.png")
+            await self._send_image_reply(message, img, f"recent_{aid}_{days}d")
             return
 
         # --- Single ship stats ---
         if cmd in ("ship", "单船"):
             if not rest:
-                await message.reply(f"Usage: `{prefix} ship <ship_name>`")
+                await self._safe_reply(message, f"Usage: `{prefix} ship <ship_name>`")
                 return
-            # Check if user passed <realm> <nick> <ship> or just <ship>
             realm_opt = normalize_realm(rest[0]) if len(rest) >= 3 else None
             if realm_opt:
-                resolved = await self._resolve_target_account(rest[:2], target_user_id, lang)
+                resolved = await self._resolve_target_account(rest[:2], read_target_uid, lang)
                 ship_query = " ".join(rest[2:])
             else:
-                resolved = await self._resolve_target_account([], target_user_id, lang)
+                resolved = await self._resolve_target_account([], read_target_uid, lang)
                 ship_query = " ".join(rest)
             if isinstance(resolved, str):
-                await message.reply(resolved)
+                await self._safe_reply(message, resolved)
                 return
             realm, aid, nick = resolved
             ship = await self._resolve_ship(message, ship_query, lang)
@@ -330,7 +584,9 @@ class WoWSGameVoxBot(discord.Client):
                 return
             entries = await self.wg.get_account_ships_stats(realm, aid, ship_id=ship.ship_id)
             if not entries:
-                await message.reply(self.i18n.t("bot.ship_not_found", lang=lang, query=ship.display_name(lang)))
+                await self._safe_reply(
+                    message, self.i18n.t("bot.ship_not_found", lang=lang, query=ship.display_name(lang))
+                )
                 return
             entry = entries[0]
             clan = await self.wg.get_account_clan(realm, aid)
@@ -356,17 +612,17 @@ class WoWSGameVoxBot(discord.Client):
                 "max_frags": pvp_bucket["max_frags_battle"],
             }
             img = await self.renderer.render_ship_stats(view, lang=lang)
-            await self._send_image_reply(message, img, f"ship_{aid}_{ship.ship_id}.png")
+            await self._send_image_reply(message, img, f"ship_{aid}_{ship.ship_id}")
             return
 
-        # --- Ship leaderboard (Yuyuko public tokenless + local SQLite fallback) ---
+        # --- Ship leaderboard ---
         if cmd in ("ship.rank", "rank", "排行榜"):
             if len(rest) < 2:
-                await message.reply(f"Usage: `{prefix} ship.rank <na|eu|asia> <ship_name>`")
+                await self._safe_reply(message, f"Usage: `{prefix} ship.rank <na|eu|asia> <ship_name>`")
                 return
             realm = normalize_realm(rest[0])
             if realm is None:
-                await message.reply(f"Usage: `{prefix} ship.rank <na|eu|asia> <ship_name>`")
+                await self._safe_reply(message, f"Usage: `{prefix} ship.rank <na|eu|asia> <ship_name>`")
                 return
             ship = await self._resolve_ship(message, " ".join(rest[1:]), lang)
             if ship is None:
@@ -384,22 +640,24 @@ class WoWSGameVoxBot(discord.Client):
                         )
                     ).value
             if not entries:
-                await message.reply(self.i18n.t("bot.ship_not_found", lang=lang, query=ship.display_name(lang)))
+                await self._safe_reply(
+                    message, self.i18n.t("bot.ship_not_found", lang=lang, query=ship.display_name(lang))
+                )
                 return
             img = await self.renderer.render_ship_rank(
                 realm=realm, ship=ship, entries=entries, is_global=is_global, lang=lang
             )
-            await self._send_image_reply(message, img, f"rank_{realm}_{ship.ship_id}.png")
+            await self._send_image_reply(message, img, f"rank_{realm}_{ship.ship_id}")
             return
 
         # --- Clan info ---
         if cmd in ("clan", "军团"):
             if len(rest) < 2:
-                await message.reply(f"Usage: `{prefix} clan <na|eu|asia> <TAG>`")
+                await self._safe_reply(message, f"Usage: `{prefix} clan <na|eu|asia> <TAG>`")
                 return
             realm = normalize_realm(rest[0])
             if realm is None:
-                await message.reply(f"Usage: `{prefix} clan <na|eu|asia> <TAG>`")
+                await self._safe_reply(message, f"Usage: `{prefix} clan <na|eu|asia> <TAG>`")
                 return
             tag = rest[1].strip()
             clans = await self.wg.search_clan(realm, tag, limit=5)
@@ -407,14 +665,26 @@ class WoWSGameVoxBot(discord.Client):
                 clans[0] if clans else None
             )
             if not chosen:
-                await message.reply(
-                    self.i18n.t("bot.clan_not_found", lang=lang, realm=self.i18n.t(f"realms.{realm}", lang=lang), tag=tag)
+                await self._safe_reply(
+                    message,
+                    self.i18n.t(
+                        "bot.clan_not_found",
+                        lang=lang,
+                        realm=self.i18n.t(f"realms.{realm}", lang=lang),
+                        tag=_sanitize_echo(tag),
+                    ),
                 )
                 return
             detail = await self.wg.get_clan_info(realm, int(chosen["clan_id"]))
             if not detail:
-                await message.reply(
-                    self.i18n.t("bot.clan_not_found", lang=lang, realm=self.i18n.t(f"realms.{realm}", lang=lang), tag=tag)
+                await self._safe_reply(
+                    message,
+                    self.i18n.t(
+                        "bot.clan_not_found",
+                        lang=lang,
+                        realm=self.i18n.t(f"realms.{realm}", lang=lang),
+                        tag=_sanitize_echo(tag),
+                    ),
                 )
                 return
             members_raw = list((detail.get("members") or {}).values())
@@ -440,7 +710,7 @@ class WoWSGameVoxBot(discord.Client):
                 "members": members,
             }
             img = await self.renderer.render_clan_info(view, lang=lang)
-            await self._send_image_reply(message, img, f"clan_{realm}_{view['tag']}.png")
+            await self._send_image_reply(message, img, f"clan_{realm}_{view['tag']}")
             return
 
         # --- Roll random ship ---
@@ -467,10 +737,11 @@ class WoWSGameVoxBot(discord.Client):
             if type_filter is not None:
                 ships = [s for s in ships if s.ship_type == type_filter]
             if not ships:
-                await message.reply(self.i18n.t("bot.roll_empty", lang=lang))
+                await self._safe_reply(message, self.i18n.t("bot.roll_empty", lang=lang))
                 return
             pick = random.choice(ships)
-            await message.reply(
+            await self._safe_reply(
+                message,
                 self.i18n.t(
                     "bot.roll_result",
                     lang=lang,
@@ -478,26 +749,32 @@ class WoWSGameVoxBot(discord.Client):
                     ship_name=pick.display_name(lang),
                     ship_type=self.i18n.t(f"ship_types.{pick.ship_type}", lang=lang),
                     nation=pick.nation,
-                )
+                ),
             )
             return
 
         # --- Default: Player overview (`wws me` or `wws <realm> <nickname>`) ---
         query_tokens = [] if cmd == "me" else tokens
-        resolved = await self._resolve_target_account(query_tokens, target_user_id, lang)
+        resolved = await self._resolve_target_account(query_tokens, read_target_uid, lang)
         if isinstance(resolved, str):
-            await message.reply(resolved)
+            await self._safe_reply(message, resolved)
             return
         realm, aid, nick = resolved
         batch = await self.wg.get_accounts_info_batch(realm, [aid])
         acc_info = batch.get(aid)
         if not acc_info:
-            await message.reply(
-                self.i18n.t("bot.bind_not_found", lang=lang, realm=self.i18n.t(f"realms.{realm}", lang=lang), nickname=nick)
+            await self._safe_reply(
+                message,
+                self.i18n.t(
+                    "bot.bind_not_found",
+                    lang=lang,
+                    realm=self.i18n.t(f"realms.{realm}", lang=lang),
+                    nickname=_sanitize_echo(nick),
+                ),
             )
             return
         if acc_info.get("hidden_profile"):
-            await message.reply(self.i18n.t("bot.hidden_profile", lang=lang, nickname=nick))
+            await self._safe_reply(message, self.i18n.t("bot.hidden_profile", lang=lang, nickname=nick))
             return
         ships_stats = await self.wg.get_account_ships_stats(realm, aid)
         clan = await self.wg.get_account_clan(realm, aid)
@@ -513,7 +790,7 @@ class WoWSGameVoxBot(discord.Client):
             lang=lang,
         )
         img = await self.renderer.render_player_overview(view, lang=lang)
-        await self._send_image_reply(message, img, f"overview_{realm}_{aid}.png")
+        await self._send_image_reply(message, img, f"overview_{realm}_{aid}")
 
     async def _resolve_target_account(
         self,
@@ -539,7 +816,7 @@ class WoWSGameVoxBot(discord.Client):
                 "bot.bind_not_found",
                 lang=lang,
                 realm=self.i18n.t(f"realms.{realm}", lang=lang),
-                nickname=nick,
+                nickname=_sanitize_echo(nick),
             )
         return realm, int(chosen["account_id"]), str(chosen["nickname"])
 
@@ -548,7 +825,9 @@ class WoWSGameVoxBot(discord.Client):
     ) -> ShipMeta | None:
         matches = self.repo.search_ships(query, limit=6)
         if not matches:
-            await message.reply(self.i18n.t("bot.ship_not_found", lang=lang, query=query))
+            await self._safe_reply(
+                message, self.i18n.t("bot.ship_not_found", lang=lang, query=_sanitize_echo(query))
+            )
             return None
         q_low = query.strip().lower()
         for m in matches:
@@ -557,5 +836,5 @@ class WoWSGameVoxBot(discord.Client):
         if len(matches) == 1:
             return matches[0]
         choices = "\n".join(f"• T{m.tier} {m.name_zh} ({m.name_en})" for m in matches)
-        await message.reply(self.i18n.t("bot.ship_multiple", lang=lang, choices=choices))
+        await self._safe_reply(message, self.i18n.t("bot.ship_multiple", lang=lang, choices=choices))
         return None

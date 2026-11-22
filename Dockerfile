@@ -4,7 +4,7 @@ FROM python:3.12-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_SYSTEM_PYTHON=1 \
+    PATH="/app/.venv/bin:$PATH" \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DATA_DIR=/data
 
@@ -13,7 +13,6 @@ WORKDIR /app
 # Install CJK fonts for crisp Chinese card rendering + libatomic1 for Playwright driver
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    curl \
     libatomic1 \
     fonts-noto-cjk \
     fonts-noto-color-emoji \
@@ -22,21 +21,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /uvx /usr/local/bin/
 
-# Copy dependency manifests first for Docker layer caching
+# Install dependencies & Chromium BEFORE copying app source so code edits hit Docker cache
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
-
-RUN uv sync --frozen --no-dev \
-    && .venv/bin/playwright install --with-deps chromium \
+RUN uv sync --frozen --no-dev --no-install-project \
+    && /app/.venv/bin/playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 
-# Copy runtime assets (templates + locales)
+# Now copy application source & runtime assets and install project into .venv
+COPY src ./src
 COPY locales ./locales
 COPY templates ./templates
+RUN uv sync --frozen --no-dev
 
-RUN mkdir -p /data
+# Run as non-root user
+RUN useradd -u 10001 -m -s /usr/sbin/nologin botuser \
+    && mkdir -p /data \
+    && chown -R botuser:botuser /data /app \
+    && chmod -R a+rX /ms-playwright
 
-HEALTHCHECK --interval=60s --timeout=10s --start-period=20s --retries=3 \
-    CMD ["uv", "run", "--no-sync", "wows-bot", "--healthcheck"]
+USER botuser
 
-ENTRYPOINT ["uv", "run", "--no-sync", "wows-bot"]
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD ["wows-bot", "--healthcheck"]
+
+ENTRYPOINT ["wows-bot"]

@@ -1,4 +1,4 @@
-"""Playwright Chromium HTML -> image renderer with bounded concurrency."""
+"""Hardened Playwright Chromium HTML -> image renderer with crash auto-recovery."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ import asyncio
 import contextlib
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from loguru import logger
-from playwright.async_api import Browser, Playwright, async_playwright
+from playwright.async_api import Browser, Playwright, Route, async_playwright
+from playwright.async_api import Error as PlaywrightError
 
-from wows_bot.config import Settings
+from wows_bot.config import ALLOWED_WG_ICON_SUFFIXES, Settings
 from wows_bot.db.repository import ShipMeta
 from wows_bot.i18n import I18n
 from wows_bot.services.pr import classify_pr, win_rate_color
@@ -31,6 +33,20 @@ ROMAN_TIERS: dict[int, str] = {
 }
 
 
+async def _wg_cdn_route_filter(route: Route) -> None:
+    """Allow only HTTPS image GETs to official WG CDN hosts; abort everything else (SSRF guard)."""
+    req = route.request
+    if req.method != "GET" or req.resource_type != "image":
+        await route.abort()
+        return
+    parsed = urlparse(req.url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and any(host.endswith(s) for s in ALLOWED_WG_ICON_SUFFIXES):
+        await route.continue_()
+    else:
+        await route.abort()
+
+
 class CardRenderer:
     def __init__(self, settings: Settings, i18n: I18n) -> None:
         self.settings = settings
@@ -39,6 +55,7 @@ class CardRenderer:
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._start_lock = asyncio.Lock()
+        self._base_css = (settings.templates_dir / "base.css").read_text(encoding="utf-8")
 
         self._jinja = Environment(
             loader=FileSystemLoader(str(settings.templates_dir)),
@@ -47,36 +64,49 @@ class CardRenderer:
         self._jinja.filters["intcomma"] = lambda v: f"{int(round(float(v or 0))):,}"
         self._jinja.filters["roman"] = lambda t: ROMAN_TIERS.get(int(t or 0), str(t or ""))
 
+    def is_healthy(self) -> bool:
+        return self._browser is not None and self._browser.is_connected()
+
     async def start(self) -> None:
         async with self._start_lock:
-            if self._browser is not None:
+            if self._browser is not None and self._browser.is_connected():
                 return
+            await self._cleanup_unlocked()
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
                     "--disable-gpu",
                 ],
             )
+            self._browser.on("disconnected", self._on_disconnected)
             logger.info("Playwright Chromium renderer started (concurrency={})", self.settings.render_concurrency)
 
-    async def close(self) -> None:
+    def _on_disconnected(self) -> None:
+        logger.warning("Playwright Chromium disconnected; will auto-relaunch on next render")
+        self._browser = None
+
+    async def _cleanup_unlocked(self) -> None:
         if self._browser is not None:
-            await self._browser.close()
+            with contextlib.suppress(Exception):
+                await self._browser.close()
             self._browser = None
         if self._pw is not None:
-            await self._pw.stop()
+            with contextlib.suppress(Exception):
+                await self._pw.stop()
             self._pw = None
 
+    async def close(self) -> None:
+        async with self._start_lock:
+            await self._cleanup_unlocked()
+
     def render_html(self, template_name: str, context: dict[str, Any], lang: str = "zh") -> str:
-        base_css = (self.settings.templates_dir / "base.css").read_text(encoding="utf-8")
         tpl = self._jinja.get_template(template_name)
         return tpl.render(
             **context,
-            base_css=base_css,
+            base_css=self._base_css,
             lang=lang,
             cat=self.i18n.catalog(lang),
             t=lambda key, **kw: self.i18n.t(key, lang=lang, **kw),
@@ -91,27 +121,41 @@ class CardRenderer:
         width: int = 1080,
     ) -> bytes:
         html = self.render_html(template_name, context, lang=lang)
-        if self._browser is None:
-            await self.start()
+        for attempt in range(2):
+            if not self.is_healthy():
+                await self.start()
+            try:
+                return await self._render_once(html, width=width)
+            except PlaywrightError as exc:
+                if attempt == 0:
+                    logger.warning("Chromium render failed ({}); recycling browser and retrying", type(exc).__name__)
+                    await self.close()
+                    continue
+                raise
+        raise RuntimeError("Render retry loop exhausted")
 
+    async def _render_once(self, html: str, *, width: int) -> bytes:
         async with self._sem:
+            if not self.is_healthy():
+                await self.start()
             assert self._browser is not None
             ctx = await self._browser.new_context(
                 viewport={"width": width, "height": 600},
                 device_scale_factor=2,
+                java_script_enabled=False,
             )
             try:
+                await ctx.route("**/*", _wg_cdn_route_filter)
                 page = await ctx.new_page()
                 await page.set_content(
                     html,
                     wait_until="domcontentloaded",
                     timeout=int(self.settings.render_timeout_seconds * 1000),
                 )
-                # Give external ship icons up to 2.5s to finish loading, without blocking forever
                 with contextlib.suppress(Exception):
                     await page.wait_for_load_state("networkidle", timeout=2500)
                 card = page.locator(".card-root")
-                img_type = "jpeg" if self.settings.render_image_format == "jpeg" else "png"
+                img_type = self.settings.render_image_format
                 kwargs: dict[str, Any] = {"type": img_type}
                 if img_type == "jpeg":
                     kwargs["quality"] = 92
@@ -168,9 +212,7 @@ class CardRenderer:
 
         avg_pr = sum(pr_vals) / len(pr_vals) if pr_vals else 0.0
         avg_pr_info = classify_pr(avg_pr)
-        bt_str = datetime.fromtimestamp(group["battle_time"], tz=UTC).strftime(
-            "%Y-%m-%d %H:%M UTC"
-        )
+        bt_str = datetime.fromtimestamp(group["battle_time"], tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
         ctx = {
             "group": group,
             "battle_time_str": bt_str,

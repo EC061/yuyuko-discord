@@ -93,8 +93,11 @@
     "track_enabled": "Enabled auto battle reports in this channel for **{realm}** `{nickname}` (with division dedup).",
     "track_disabled": "Disabled auto battle reports in this channel for **{realm}** `{nickname}`.",
     "channel_set": "Set this channel as the default battle report channel.",
-    "lang_set": "Language switched to **English**.",
+    "lang_set": "Personal language switched to **English**.",
+    "lang_server_set": "Server default language switched to **English**.",
     "lang_invalid": "Supported languages: `zh` (Chinese), `en` (English).",
+    "permission_denied": "Permission denied: this command requires server administrator permissions.",
+    "cooldown_active": "Slow down — please wait {seconds}s before running another command.",
     "wg_key_missing": "`WG_APPLICATION_ID` is not configured yet on the server.",
     "hidden_profile": "Player `{nickname}` has a hidden profile.",
     "no_recent_data": "No local recent stats for `{nickname}` over the last {days} days yet (recorded daily once bound).",
@@ -104,7 +107,7 @@
     "clan_not_found": "Could not find clan `{tag}` on **{realm}**.",
     "roll_result": "🎲 Rolled ship: **T{tier} {ship_name}** ({ship_type} · {nation})",
     "roll_empty": "No ships matched those filters.",
-    "error_generic": "Query failed: {error}",
+    "error_generic": "Request failed (ref `{error_id}`). Please try again shortly.",
     "help_text": "**Self-Hosted WoWS Bot Commands (NA / EU / ASIA)**\n• `{prefix} bind <na|eu|asia> <nickname>` — Bind account & enable tracking\n• `{prefix} me` / `{prefix} <realm> <nickname>` — Player overview card\n• `{prefix} ship <ship_name>` — Single-ship stats card\n• `{prefix} recent [days]` — Recent performance card (default 7d)\n• `{prefix} last` / `{prefix} recents` — Latest match / division report\n• `{prefix} track on|off` — Toggle auto battle posting in this channel\n• `{prefix} ship.rank <realm> <ship>` — Ship leaderboard\n• `{prefix} clan <realm> <TAG>` — Clan overview\n• `{prefix} roll [tier] [type]` — Random ship picker\n• `{prefix} lang <zh|en>` — Switch language (default Chinese)"
   }
 }

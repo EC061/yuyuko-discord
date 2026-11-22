@@ -2,7 +2,6 @@ name: Upstream & Contract Watcher
 
 on:
   schedule:
-    # Run daily at 08:00 UTC
     - cron: "0 8 * * *"
   workflow_dispatch:
 
@@ -15,38 +14,71 @@ jobs:
     name: Monitor Upstream Repos & Public API Contracts
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: uv.lock
+
       - name: Check Yuyuko org, honker releases, and public endpoints
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess, urllib.request
+          import json, os, re, subprocess, urllib.request
 
           repo = os.environ["REPO"]
+          gh_token = os.environ["GH_TOKEN"]
 
-          def fetch_json(url: str, headers=None):
-              req = urllib.request.Request(url, headers=headers or {"User-Agent": "wows-gamevox-bot-watcher"})
+          def fetch_json(url: str, github_auth: bool = False):
+              headers = {"User-Agent": "wows-gamevox-bot-watcher"}
+              if github_auth:
+                  headers["Authorization"] = f"Bearer {gh_token}"
+              req = urllib.request.Request(url, headers=headers)
               with urllib.request.urlopen(req, timeout=15) as r:
                   return r.status, json.loads(r.read().decode("utf-8"))
 
+          def sanitize_err(text: str) -> str:
+              return text.replace("@", "[at]").replace("```", "'''")[:400]
+
+          # Alerts: (marker, one_time_ack, title, body)
           alerts = []
 
           # 1. Contract check: Yuyuko public ship.rank endpoint (no token)
           try:
               status, data = fetch_json("https://v3-api.wows.shinoaki.com/public/rank/yuyuko_ship/na?shipId=4276041424&page=1")
               if status != 200 or data.get("code") != 200 or not isinstance((data.get("data") or {}).get("value"), list):
-                  alerts.append(("yuyuko-ship-rank-contract", "Yuyuko `/public/rank/yuyuko_ship/na` contract changed", f"HTTP {status}, code={data.get('code')}. Bot will fall back to local leaderboard until `yuyuko_rank.py` is updated."))
+                  alerts.append((
+                      "yuyuko-ship-rank-contract",
+                      False,
+                      "Yuyuko `/public/rank/yuyuko_ship/na` contract changed",
+                      f"```\nHTTP {status}, code={data.get('code')}\n```\nBot automatically falls back to local leaderboard until `yuyuko_rank.py` is updated.",
+                  ))
           except Exception as e:
-              alerts.append(("yuyuko-ship-rank-contract", "Yuyuko `/public/rank/yuyuko_ship/na` unreachable", f"Error: `{e}`. Check if Yuyuko migrated to a new API version (e.g. v4)."))
+              alerts.append((
+                  "yuyuko-ship-rank-contract",
+                  False,
+                  "Yuyuko `/public/rank/yuyuko_ship/na` unreachable",
+                  f"```\n{sanitize_err(str(e))}\n```\nCheck if Yuyuko migrated to a new API version (e.g. v4).",
+              ))
 
           # 2. Contract check: WoWS Numbers PR expected JSON
           try:
               status, data = fetch_json("https://api.wows-numbers.com/personal/rating/expected/json/")
               if status != 200 or not isinstance(data.get("data"), dict) or len(data["data"]) < 200:
-                  alerts.append(("wows-numbers-pr-contract", "WoWS Numbers PR expected JSON schema changed", f"HTTP {status}, entries={len(data.get('data') or {})}."))
+                  alerts.append((
+                      "wows-numbers-pr-contract",
+                      False,
+                      "WoWS Numbers PR expected JSON schema changed",
+                      f"```\nHTTP {status}, entries={len(data.get('data') or {})}\n```",
+                  ))
           except Exception as e:
-              alerts.append(("wows-numbers-pr-contract", "WoWS Numbers PR expected JSON unreachable", f"Error: `{e}`."))
+              alerts.append((
+                  "wows-numbers-pr-contract",
+                  False,
+                  "WoWS Numbers PR expected JSON unreachable",
+                  f"```\n{sanitize_err(str(e))}\n```",
+              ))
 
           # 3. Watch wows-yuyuko org for newly created repos (e.g. an open-sourced backend!)
           known_yuyuko_repos = {
@@ -56,25 +88,33 @@ jobs:
               "wows-yuyuko-christmas-cn-port-user", "wows-exporter-3dmodel", ".github",
           }
           try:
-              _, repos = fetch_json("https://api.github.com/orgs/wows-yuyuko/repos?per_page=100")
-              new_repos = [r["name"] for r in repos if r["name"] not in known_yuyuko_repos]
-              if new_repos:
+              _, repos = fetch_json("https://api.github.com/orgs/wows-yuyuko/repos?per_page=100", github_auth=True)
+              new_repos = sorted(r["name"] for r in repos if r["name"] not in known_yuyuko_repos)
+              for new_repo in new_repos:
                   alerts.append((
-                      "yuyuko-new-repo",
-                      f"Upstream wows-yuyuko published new repo(s): {', '.join(new_repos)}",
-                      "New repositories detected in `https://github.com/wows-yuyuko`:\n" + "\n".join(f"- https://github.com/wows-yuyuko/{n}" for n in new_repos),
+                      f"yuyuko-new-repo-{new_repo}",
+                      True,
+                      f"Upstream wows-yuyuko published new repo: {new_repo}",
+                      f"New repository detected in `wows-yuyuko`: https://github.com/wows-yuyuko/{new_repo}",
                   ))
           except Exception as e:
               print(f"Skipping org check: {e}")
 
-          # 4. Watch russellromney/honker releases
+          # 4. Watch russellromney/honker releases compared dynamically against uv.lock
+          locked_honker = ""
+          if os.path.exists("uv.lock"):
+              lock_txt = open("uv.lock", encoding="utf-8").read()
+              m = re.search(r'name = "honker"\s+version = "([^"]+)"', lock_txt)
+              if m:
+                  locked_honker = m.group(1)
           try:
-              _, rel = fetch_json("https://api.github.com/repos/russellromney/honker/releases/latest")
-              tag = rel.get("tag_name", "")
-              if tag and tag not in ("v0.5.0", "v0.6.0"):
+              _, rel = fetch_json("https://api.github.com/repos/russellromney/honker/releases/latest", github_auth=True)
+              tag = rel.get("tag_name", "").lstrip("v")
+              if tag and locked_honker and tag != locked_honker:
                   alerts.append((
-                      f"honker-release-{tag}",
-                      f"New russellromney/honker release: {tag}",
+                      f"honker-release-v{tag}",
+                      True,
+                      f"New russellromney/honker release: v{tag} (locked: v{locked_honker})",
                       f"Release URL: {rel.get('html_url')}\n\nCheck PyPI wheel availability and run `uv lock --upgrade-package honker`.",
                   ))
           except Exception as e:
@@ -84,19 +124,24 @@ jobs:
               print("All upstream contracts and repos healthy / unchanged.")
               raise SystemExit(0)
 
-          existing = json.loads(subprocess.check_output(
-              ["gh", "issue", "list", "--repo", repo, "--state", "open", "--label", "upstream-watch", "--json", "title,body"],
+          open_issues = json.loads(subprocess.check_output(
+              ["gh", "issue", "list", "--repo", repo, "--state", "open", "--label", "upstream-watch", "--limit", "200", "--json", "body"],
               text=True,
           ))
-          existing_text = "\n".join((i["title"] + "\n" + i["body"]) for i in existing)
+          all_issues = json.loads(subprocess.check_output(
+              ["gh", "issue", "list", "--repo", repo, "--state", "all", "--label", "upstream-watch", "--limit", "200", "--json", "body"],
+              text=True,
+          ))
+          open_text = "\n".join(i["body"] for i in open_issues)
+          all_text = "\n".join(i["body"] for i in all_issues)
 
-          # Ensure label exists
           subprocess.run(["gh", "label", "create", "upstream-watch", "--repo", repo, "--color", "0e8a16", "--force"], check=False)
 
-          for marker, title, body in alerts:
+          for marker, one_time_ack, title, body in alerts:
               tag_marker = f"<!-- watch:{marker} -->"
-              if tag_marker in existing_text:
-                  print(f"Issue already open for {marker}, skipping.")
+              haystack = all_text if one_time_ack else open_text
+              if tag_marker in haystack:
+                  print(f"Issue already tracked for {marker}, skipping.")
                   continue
               subprocess.run(
                   ["gh", "issue", "create", "--repo", repo, "--label", "upstream-watch", "--title", title, "--body", f"{body}\n\n{tag_marker}"],
