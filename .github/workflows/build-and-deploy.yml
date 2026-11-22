@@ -191,7 +191,14 @@ jobs:
           envs: VPS_COMPOSE_DIR,IMAGE_TAG
           script: |
             set -euo pipefail
-            cd "${VPS_COMPOSE_DIR}"
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker compose ps
+            if sudo -n true 2>/dev/null; then
+              sudo mkdir -p "${VPS_COMPOSE_DIR}/data"
+              sudo chown -R 10001:10001 "${VPS_COMPOSE_DIR}/data"
+              sudo bash -c "cd \"${VPS_COMPOSE_DIR}\" && docker compose pull && docker compose up -d --remove-orphans && docker compose ps"
+            else
+              mkdir -p "${VPS_COMPOSE_DIR}/data"
+              cd "${VPS_COMPOSE_DIR}"
+              docker compose pull
+              docker compose up -d --remove-orphans
+              docker compose ps
+            fi
