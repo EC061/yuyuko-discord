@@ -1,10 +1,10 @@
-# wows-gamevox-bot
+# wows-discord-bot
 
-Self-hosted World of Warships stats & auto-posting bot for **GameVox** (Discord API v10 compatible), targeting **NA / EU / ASIA**.
+Self-hosted World of Warships stats & auto-posting bot for **Discord** (API v10), targeting **NA / EU / ASIA**.
 
 Built with:
 - **Python 3.12 + `uv`**
-- **`discord.py`** pointed at GameVox REST (`https://app-api.gamevox.com/api/v10`) & Gateway (`wss://gateway.gamevox.com`)
+- **Native `discord.py`** connected to Discord API v10 & Gateway (with Message Content Intent)
 - **SQLite (WAL mode)** + **[`russellromney/honker`](https://github.com/russellromney/honker)** for atomic transactional outbox queues & delayed jobs (zero Redis/RabbitMQ)
 - **Official Wargaming Developer API** (zero dependency on Yuyuko's closed backend; optional tokenless `ship.rank` lookup from Yuyuko's public endpoint with local SQLite fallback)
 - **Playwright Chromium** + owned Chinese/English HTML/CSS stat cards (`zh` default, `en` supported)
@@ -36,10 +36,12 @@ Built with:
 1. In **1Panel → Containers → Compose → Create Compose**, paste [`docker-compose.yml`](./docker-compose.yml).
 2. Create a `.env` file in that Compose directory (copy from [`.env.example`](./.env.example)) and set:
    ```env
-   GAMEVOX_BOT_TOKEN=<your_gamevox_bot_token>
+   DISCORD_BOT_TOKEN=<your_discord_bot_token>
    WG_APPLICATION_ID=<your_wg_developer_application_id>
-   DEFAULT_GUILD_ID=1487625003808419840
-   DEFAULT_AUTO_POST_CHANNEL_ID=1574077276956221440
+   DEFAULT_GUILD_ID=815711272262828063
+   DEFAULT_AUTO_POST_CHANNEL_ID=1576054680713166848
+   RESTRICT_TO_BOUND_CHANNEL=true
+   ADMIN_USER_IDS=363790401582268416
    DEFAULT_LANGUAGE=zh
    ```
 3. Start the Compose stack in 1Panel.

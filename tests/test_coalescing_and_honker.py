@@ -82,22 +82,22 @@ def test_sqlite_wal_mode_enabled(repo: Repository) -> None:
 
 
 def test_two_player_division_coalesces_into_single_match_and_one_post(repo: Repository) -> None:
-    # Bind both squadmates to the same GameVox channel (#战舰世界)
+    # Bind both squadmates to the same Discord channel
     repo.bind_account(
-        gamevox_user_id="u1",
+        discord_user_id="u1",
         realm="na",
         account_id=1001,
         nickname="Edward",
-        guild_id="1487625003808419840",
-        auto_post_channel_id="1574077276956221440",
+        guild_id="815711272262828063",
+        auto_post_channel_id="1576054680713166848",
     )
     repo.bind_account(
-        gamevox_user_id="u2",
+        discord_user_id="u2",
         realm="na",
         account_id=1002,
         nickname="Wingman",
-        guild_id="1487625003808419840",
-        auto_post_channel_id="1574077276956221440",
+        guild_id="815711272262828063",
+        auto_post_channel_id="1576054680713166848",
     )
 
     t0 = 1_760_000_100
@@ -134,10 +134,10 @@ def test_two_player_division_coalesces_into_single_match_and_one_post(repo: Repo
 
     # Target channels deduplicated to 1 channel; delivery slot prevents double-posting
     targets = repo.get_target_channels_for_match_group(out1.match_group_id)
-    assert targets == [("1487625003808419840", "1574077276956221440")]
-    assert repo.claim_delivery_slot(out1.match_group_id, "1574077276956221440") is True
-    repo.mark_delivery_result(out1.match_group_id, "1574077276956221440", success=True, message_id="msg-1")
-    assert repo.claim_delivery_slot(out1.match_group_id, "1574077276956221440") is False
+    assert targets == [("815711272262828063", "1576054680713166848")]
+    assert repo.claim_delivery_slot(out1.match_group_id, "1576054680713166848") is True
+    repo.mark_delivery_result(out1.match_group_id, "1576054680713166848", success=True, message_id="msg-1")
+    assert repo.claim_delivery_slot(out1.match_group_id, "1576054680713166848") is False
 
 
 def test_three_player_division_coalesces_all_three(repo: Repository) -> None:
@@ -192,11 +192,11 @@ def test_solo_match_finalizes_immediately(repo: Repository) -> None:
 @pytest.mark.asyncio
 async def test_end_to_end_poller_seed_then_squad_match(repo: Repository, tmp_path: Path) -> None:
     repo.bind_account(
-        gamevox_user_id="u1", realm="na", account_id=1001, nickname="Edward",
+        discord_user_id="u1", realm="na", account_id=1001, nickname="Edward",
         guild_id="g1", auto_post_channel_id="c1",
     )
     repo.bind_account(
-        gamevox_user_id="u2", realm="na", account_id=1002, nickname="Friend",
+        discord_user_id="u2", realm="na", account_id=1002, nickname="Friend",
         guild_id="g1", auto_post_channel_id="c1",
     )
     settings = Settings(

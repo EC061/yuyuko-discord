@@ -1,7 +1,8 @@
-"""Security, GameVox compatibility, and reliability regression tests."""
+"""Security, native Discord policy, migration, and reliability regression tests."""
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,12 +12,13 @@ import httpx
 import pytest
 import respx
 
-from wows_bot.bot.gamevox import normalize_command_tokens, patch_discord_for_gamevox
+from wows_bot.bot.discord_bot import WoWSDiscordBot, normalize_command_tokens
 from wows_bot.clients.pr_source import PRSourceClient
 from wows_bot.clients.wg_api import WGApiClient, WGApiError, sanitize_wg_icon_url
 from wows_bot.config import Settings
 from wows_bot.db.repository import BattleRecordInput, Repository, ShipMeta
-from wows_bot.db.schema import DatabaseManager
+from wows_bot.db.schema import MIGRATION_V1_SQL, MIGRATION_V2_SQL, DatabaseManager
+from wows_bot.i18n import I18n
 from wows_bot.main import _run_healthcheck
 from wows_bot.services.poller import PollerService, ShipsStatsLagError
 
@@ -58,11 +60,11 @@ def test_wg_icon_url_sanitizer_blocks_imds_and_file() -> None:
 
 def test_cross_guild_divisions_never_merge(repo: Repository) -> None:
     repo.bind_account(
-        gamevox_user_id="u_g1", realm="na", account_id=1001, nickname="Guild1Player",
+        discord_user_id="u_g1", realm="na", account_id=1001, nickname="Guild1Player",
         guild_id="guild-1", auto_post_channel_id="chan-1",
     )
     repo.bind_account(
-        gamevox_user_id="u_g2", realm="na", account_id=2002, nickname="Guild2Stranger",
+        discord_user_id="u_g2", realm="na", account_id=2002, nickname="Guild2Stranger",
         guild_id="guild-2", auto_post_channel_id="chan-2",
     )
     t0 = 1_760_100_000
@@ -109,7 +111,7 @@ def test_delivery_slot_reclaims_stale_sending_lease(repo: Repository) -> None:
 
 @pytest.mark.asyncio
 async def test_poller_retries_when_wg_ships_stats_lags(repo: Repository, tmp_path: Path) -> None:
-    repo.bind_account(gamevox_user_id="u1", realm="na", account_id=1001, nickname="Edward")
+    repo.bind_account(discord_user_id="u1", realm="na", account_id=1001, nickname="Edward")
     settings = Settings(wg_application_id="demo_key", data_dir=tmp_path, db_path=tmp_path / "sec_test.db")
     wg = WGApiClient("demo_key", rate_per_sec=100.0)
     pr_client = PRSourceClient("https://example.invalid")
@@ -140,19 +142,86 @@ async def test_poller_retries_when_wg_ships_stats_lags(repo: Repository, tmp_pat
     await pr_client.aclose()
 
 
-def test_gamevox_discord_compat_shims() -> None:
-    patch_discord_for_gamevox(Settings())
-    state = MagicMock()
-    state.create_user.side_effect = lambda d: d
+def test_strict_admin_and_bound_channel_policy(repo: Repository, tmp_path: Path) -> None:
+    settings = Settings(
+        discord_bot_token="fake-token",
+        default_guild_id="815711272262828063",
+        default_auto_post_channel_id="1576054680713166848",
+        restrict_to_bound_channel=True,
+        admin_user_ids="363790401582268416",
+        data_dir=tmp_path,
+        db_path=tmp_path / "sec_test.db",
+    )
+    bot = WoWSDiscordBot(
+        settings=settings,
+        repo=repo,
+        wg=MagicMock(),
+        yuyuko_rank=MagicMock(),
+        renderer=MagicMock(),
+        i18n=I18n(settings.locales_dir),
+    )
 
-    # AppInfo without `owner`
-    app = discord.AppInfo(state, {"id": "1574076427811074049", "name": "WoWS Stats"})
-    assert app.id == 1574076427811074049
-    assert app.owner["id"] == "1574076427811074049"
+    def _msg(user_id: int, guild_id: int, channel_id: int, *, owner_id: int = 999, is_guild_admin: bool = False):
+        m = MagicMock(spec=discord.Message)
+        m.guild = MagicMock()
+        m.guild.id = guild_id
+        m.guild.owner_id = owner_id
+        m.channel = MagicMock()
+        m.channel.id = channel_id
+        m.author = MagicMock(spec=discord.Member)
+        m.author.id = user_id
+        m.author.guild_permissions = discord.Permissions(administrator=is_guild_admin)
+        return m
 
-    # Attachment without `proxy_url`
-    att = discord.Attachment(data={"id": "1", "filename": "card.png", "url": "https://cdn.gamevox.com/a.png"}, state=state)
-    assert att.proxy_url == "https://cdn.gamevox.com/a.png"
+    admin_msg = _msg(363790401582268416, 815711272262828063, 1576054680713166848)
+    other_owner_msg = _msg(999, 815711272262828063, 1576054680713166848, owner_id=999, is_guild_admin=True)
+    wrong_ch_user_msg = _msg(12345, 815711272262828063, 1111111111111111111)
+    wrong_ch_admin_msg = _msg(363790401582268416, 815711272262828063, 1111111111111111111)
+
+    # Strict single-admin enforcement: ONLY 363790401582268416 is admin, even if another user owns the server
+    assert bot.is_admin_user_id("363790401582268416") is True
+    assert bot._is_admin(admin_msg) is True
+    assert bot._is_admin(other_owner_msg) is False
+
+    # Bound channel enforcement
+    assert bot._should_accept_channel(admin_msg, "help") is True
+    assert bot._should_accept_channel(wrong_ch_user_msg, "help") is False
+    assert bot._should_accept_channel(wrong_ch_user_msg, "channel") is False
+    assert bot._should_accept_channel(wrong_ch_admin_msg, "help") is False
+    assert bot._should_accept_channel(wrong_ch_admin_msg, "channel") is True
+
+
+def test_schema_migration_v2_to_v3_preserves_bindings(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy_v2.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        for stmt in (*MIGRATION_V1_SQL, *MIGRATION_V2_SQL):
+            conn.execute(stmt)
+        conn.execute(
+            """
+            INSERT INTO user_bindings (gamevox_user_id, realm, account_id, nickname, is_default, created_at, updated_at)
+            VALUES ('363790401582268416', 'na', 1001, 'LegacyPlayer', 1, 1000, 1000)
+            """
+        )
+        conn.execute(
+            "INSERT INTO user_preferences (gamevox_user_id, lang, updated_at) VALUES ('363790401582268416', 'en', 1000)"
+        )
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+    dbm = DatabaseManager(db_path, watch_interval_ms=10).open()
+    try:
+        repo = Repository(dbm)
+        binding = repo.get_default_binding("363790401582268416")
+        assert binding is not None
+        assert binding.discord_user_id == "363790401582268416"
+        assert binding.nickname == "LegacyPlayer"
+        assert repo.resolve_language(user_id="363790401582268416") == "en"
+    finally:
+        dbm.close()
 
 
 def test_readonly_healthcheck_checks_heartbeat(tmp_path: Path) -> None:
@@ -184,7 +253,7 @@ def test_me_subcommand_normalization_and_subscription_status(repo: Repository) -
     assert normalize_command_tokens(["na", "PlayerOne"]) == ("na", ["PlayerOne"])
 
     repo.bind_account(
-        gamevox_user_id="u1",
+        discord_user_id="u1",
         realm="na",
         account_id=1001,
         nickname="PlayerOne",

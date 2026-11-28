@@ -9,7 +9,7 @@ from pathlib import Path
 import honker
 from loguru import logger
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATION_V1_SQL: tuple[str, ...] = (
     """
@@ -198,9 +198,16 @@ MIGRATION_V2_SQL: tuple[str, ...] = (
     "ALTER TABLE match_deliveries ADD COLUMN claimed_at INTEGER",
 )
 
+MIGRATION_V3_SQL: tuple[str, ...] = (
+    # Pivot from GameVox to native Discord user IDs (preserves existing constraints & indexes)
+    "ALTER TABLE user_bindings RENAME COLUMN gamevox_user_id TO discord_user_id",
+    "ALTER TABLE user_preferences RENAME COLUMN gamevox_user_id TO discord_user_id",
+)
+
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: MIGRATION_V1_SQL,
     2: MIGRATION_V2_SQL,
+    3: MIGRATION_V3_SQL,
 }
 
 

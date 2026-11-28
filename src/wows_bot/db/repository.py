@@ -15,7 +15,7 @@ from wows_bot.services.pr import ExpectedShipValues
 @dataclass(frozen=True, slots=True)
 class UserBinding:
     id: int
-    gamevox_user_id: str
+    discord_user_id: str
     realm: Realm
     account_id: int
     nickname: str
@@ -120,7 +120,7 @@ def _row_to_tracked(r: dict[str, Any]) -> TrackedAccount:
 def _row_to_binding(r: dict[str, Any]) -> UserBinding:
     return UserBinding(
         id=int(r["id"]),
-        gamevox_user_id=str(r["gamevox_user_id"]),
+        discord_user_id=str(r["discord_user_id"]),
         realm=r["realm"],
         account_id=int(r["account_id"]),
         nickname=str(r["nickname"]),
@@ -253,7 +253,7 @@ class Repository:
     ) -> Language:
         if user_id:
             pref = self.db.query(
-                "SELECT lang FROM user_preferences WHERE gamevox_user_id = ?",
+                "SELECT lang FROM user_preferences WHERE discord_user_id = ?",
                 [user_id],
             )
             if pref and pref[0]["lang"] in ("zh", "en"):
@@ -261,7 +261,7 @@ class Repository:
             rows = self.db.query(
                 """
                 SELECT lang_override FROM user_bindings
-                WHERE gamevox_user_id = ? AND lang_override IS NOT NULL
+                WHERE discord_user_id = ? AND lang_override IS NOT NULL
                 ORDER BY is_default DESC, updated_at DESC LIMIT 1
                 """,
                 [user_id],
@@ -279,16 +279,16 @@ class Repository:
         with self.db.transaction() as tx:
             tx.execute(
                 """
-                INSERT INTO user_preferences (gamevox_user_id, lang, updated_at)
+                INSERT INTO user_preferences (discord_user_id, lang, updated_at)
                 VALUES (?, ?, ?)
-                ON CONFLICT(gamevox_user_id) DO UPDATE SET
+                ON CONFLICT(discord_user_id) DO UPDATE SET
                     lang = excluded.lang,
                     updated_at = excluded.updated_at
                 """,
                 [user_id, lang, now],
             )
             tx.execute(
-                "UPDATE user_bindings SET lang_override = ?, updated_at = ? WHERE gamevox_user_id = ?",
+                "UPDATE user_bindings SET lang_override = ?, updated_at = ? WHERE discord_user_id = ?",
                 [lang, now, user_id],
             )
 
@@ -298,7 +298,7 @@ class Repository:
     def bind_account(
         self,
         *,
-        gamevox_user_id: str,
+        discord_user_id: str,
         realm: Realm,
         account_id: int,
         nickname: str,
@@ -308,20 +308,20 @@ class Repository:
         now = int(time.time())
         with self.db.transaction() as tx:
             tx.execute(
-                "UPDATE user_bindings SET is_default = 0, updated_at = ? WHERE gamevox_user_id = ?",
-                [now, gamevox_user_id],
+                "UPDATE user_bindings SET is_default = 0, updated_at = ? WHERE discord_user_id = ?",
+                [now, discord_user_id],
             )
             tx.execute(
                 """
                 INSERT INTO user_bindings (
-                    gamevox_user_id, realm, account_id, nickname, is_default, created_at, updated_at
+                    discord_user_id, realm, account_id, nickname, is_default, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, 1, ?, ?)
-                ON CONFLICT(gamevox_user_id, realm, account_id) DO UPDATE SET
+                ON CONFLICT(discord_user_id, realm, account_id) DO UPDATE SET
                     nickname = excluded.nickname,
                     is_default = 1,
                     updated_at = excluded.updated_at
                 """,
-                [gamevox_user_id, realm, account_id, nickname, now, now],
+                [discord_user_id, realm, account_id, nickname, now, now],
             )
             tx.execute(
                 """
@@ -341,31 +341,31 @@ class Repository:
                     ON CONFLICT(realm, account_id, channel_id) DO UPDATE SET
                         enabled = 1
                     """,
-                    [realm, account_id, guild_id, auto_post_channel_id, gamevox_user_id, now],
+                    [realm, account_id, guild_id, auto_post_channel_id, discord_user_id, now],
                 )
 
-    def get_default_binding(self, gamevox_user_id: str) -> UserBinding | None:
+    def get_default_binding(self, discord_user_id: str) -> UserBinding | None:
         rows = self.db.query(
             """
-            SELECT id, gamevox_user_id, realm, account_id, nickname, is_default, lang_override
+            SELECT id, discord_user_id, realm, account_id, nickname, is_default, lang_override
             FROM user_bindings
-            WHERE gamevox_user_id = ?
+            WHERE discord_user_id = ?
             ORDER BY is_default DESC, updated_at DESC
             LIMIT 1
             """,
-            [gamevox_user_id],
+            [discord_user_id],
         )
         return _row_to_binding(rows[0]) if rows else None
 
-    def list_bindings(self, gamevox_user_id: str) -> list[UserBinding]:
+    def list_bindings(self, discord_user_id: str) -> list[UserBinding]:
         rows = self.db.query(
             """
-            SELECT id, gamevox_user_id, realm, account_id, nickname, is_default, lang_override
+            SELECT id, discord_user_id, realm, account_id, nickname, is_default, lang_override
             FROM user_bindings
-            WHERE gamevox_user_id = ?
+            WHERE discord_user_id = ?
             ORDER BY is_default DESC, id ASC
             """,
-            [gamevox_user_id],
+            [discord_user_id],
         )
         return [_row_to_binding(r) for r in rows]
 

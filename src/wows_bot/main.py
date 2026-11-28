@@ -1,4 +1,4 @@
-"""Application entrypoint for wows-gamevox-bot."""
+"""Application entrypoint for wows-discord-bot."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import time
 
 from loguru import logger
 
-from wows_bot.bot.gamevox import WoWSGameVoxBot, patch_discord_for_gamevox
+from wows_bot.bot.discord_bot import WoWSDiscordBot
 from wows_bot.clients.pr_source import PRSourceClient
 from wows_bot.clients.wg_api import WGApiClient
 from wows_bot.clients.yuyuko_rank import YuyukoRankClient
@@ -72,10 +72,8 @@ def _run_healthcheck(settings: Settings) -> int:
 async def run_app(settings: Settings) -> None:
     _configure_logging(settings.log_level)
 
-    if not settings.gamevox_bot_token:
-        raise RuntimeError("GAMEVOX_BOT_TOKEN is required to start the GameVox bot")
-
-    patch_discord_for_gamevox(settings)
+    if not settings.discord_bot_token:
+        raise RuntimeError("DISCORD_BOT_TOKEN is required to start the Discord bot")
 
     dbm = DatabaseManager(settings.resolved_db_path, settings.honker_watch_interval_ms).open()
     repo = Repository(dbm)
@@ -108,7 +106,7 @@ async def run_app(settings: Settings) -> None:
         worker_holder["worker"] = worker
         repo.touch_heartbeat("ready")
 
-    bot = WoWSGameVoxBot(
+    bot = WoWSDiscordBot(
         settings=settings,
         repo=repo,
         wg=wg,
@@ -124,7 +122,7 @@ async def run_app(settings: Settings) -> None:
             loop.add_signal_handler(sig, lambda: asyncio.create_task(bot.close()))
 
     try:
-        await bot.start(settings.gamevox_bot_token)
+        await bot.start(settings.discord_bot_token)
     finally:
         if "worker" in worker_holder:
             await worker_holder["worker"].stop()
@@ -136,7 +134,7 @@ async def run_app(settings: Settings) -> None:
 
 
 def cli() -> None:
-    parser = argparse.ArgumentParser(description="Self-hosted WoWS GameVox Bot")
+    parser = argparse.ArgumentParser(description="Self-hosted WoWS Discord Bot")
     parser.add_argument("--healthcheck", action="store_true", help="Verify SQLite WAL + heartbeat")
     args = parser.parse_args()
 

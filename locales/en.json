@@ -104,7 +104,7 @@
     "lang_set": "Personal language switched to **English**.",
     "lang_server_set": "Server default language switched to **English**.",
     "lang_invalid": "Supported languages: `zh` (Chinese), `en` (English).",
-    "permission_denied": "Permission denied: this command requires server administrator permissions.",
+    "permission_denied": "Permission denied: this command is restricted to bot administrators.",
     "cooldown_active": "Slow down — please wait {seconds}s before running another command.",
     "wg_key_missing": "`WG_APPLICATION_ID` is not configured yet on the server.",
     "hidden_profile": "Player `{nickname}` has a hidden profile.",

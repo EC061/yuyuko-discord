@@ -1,7 +1,7 @@
 [project]
-name = "wows-gamevox-bot"
-version = "0.2.0"
-description = "Self-hosted World of Warships stats & auto-posting bot for GameVox (NA/EU/ASIA) with SQLite WAL, Honker queue, and Playwright rendering."
+name = "wows-discord-bot"
+version = "0.3.0"
+description = "Self-hosted World of Warships stats & auto-posting bot for Discord (NA/EU/ASIA) with SQLite WAL, Honker queue, and Playwright rendering."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

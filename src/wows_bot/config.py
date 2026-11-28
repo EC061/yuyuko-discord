@@ -55,12 +55,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # GameVox (Discord API v10 compatible)
-    gamevox_bot_token: str = ""
-    gamevox_api_base: str = "https://app-api.gamevox.com/api/v10"
-    gamevox_gateway_url: str = "wss://gateway.gamevox.com/?v=10&encoding=json"
+    # Discord Bot (native Discord API v10)
+    discord_bot_token: str = ""
     default_guild_id: str | None = None
     default_auto_post_channel_id: str | None = None
+    restrict_to_bound_channel: bool = True
     admin_user_ids: str = ""
 
     # Wargaming Developer API (NA / EU / ASIA)

@@ -1,4 +1,4 @@
-"""GameVox Bot client built on discord.py (Discord API v10 compatible)."""
+"""Native Discord Bot client built on discord.py (Discord API v10)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import discord
-import yarl
 from loguru import logger
 
 from wows_bot.clients.wg_api import WGApiClient, WGApiError
@@ -29,7 +28,6 @@ from wows_bot.services.stats_builder import (
 )
 
 MENTION_RE = re.compile(r"<@!?(\d+)>")
-_GAMEVOX_PATCHED = False
 
 _SELF_TOKENS = frozenset({"me", "自己", "我"})
 _ME_PROMOTABLE_SUBCOMMANDS = frozenset(
@@ -47,6 +45,7 @@ _ME_PROMOTABLE_SUBCOMMANDS = frozenset(
         "推送",
     }
 )
+_CHANNEL_BIND_CMDS = frozenset({"channel", "setchannel", "设置频道"})
 
 
 def normalize_command_tokens(tokens: list[str]) -> tuple[str, list[str]]:
@@ -68,155 +67,7 @@ def _sanitize_echo(text: str, max_len: int = 80) -> str:
     return cleaned[:max_len]
 
 
-def patch_discord_for_gamevox(settings: Settings) -> None:
-    """Point discord.py REST + Gateway endpoints to GameVox (Discord API v10)
-    and apply defensive payload compatibility shims for fields GameVox omits.
-    """
-    global _GAMEVOX_PATCHED
-    discord.http.Route.BASE = settings.gamevox_api_base.rstrip("/")
-    discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY = yarl.URL(settings.gamevox_gateway_url)
-
-    if not _GAMEVOX_PATCHED:
-        # 1. AppInfo: GameVox omits `owner` and may omit optional metadata fields
-        orig_appinfo_init = discord.AppInfo.__init__
-
-        def _compat_appinfo_init(self, state, data):
-            if isinstance(data, dict):
-                patched = {
-                    "description": "",
-                    "icon": None,
-                    "bot_public": False,
-                    "bot_require_code_grant": False,
-                    "verify_key": "",
-                    **data,
-                }
-                if not patched.get("owner"):
-                    patched["owner"] = {
-                        "id": str(patched.get("id") or "0"),
-                        "username": str(patched.get("name") or "gamevox_owner"),
-                        "discriminator": "0",
-                        "avatar": None,
-                    }
-                data = patched
-            return orig_appinfo_init(self, state, data)
-
-        discord.AppInfo.__init__ = _compat_appinfo_init  # type: ignore[method-assign]
-
-        # 2. Channels: GameVox voice/text/category/forum channels can omit bitrate, user_limit, position
-        from discord.channel import CategoryChannel, ForumChannel, TextChannel, VocalGuildChannel
-
-        orig_vocal_update = VocalGuildChannel._update
-
-        def _compat_vocal_update(self, guild, data):
-            if isinstance(data, dict):
-                data = {"bitrate": 64000, "user_limit": 0, "position": 0, **data}
-                if data.get("position") is None:
-                    data["position"] = 0
-                if data.get("bitrate") is None:
-                    data["bitrate"] = 64000
-                if data.get("user_limit") is None:
-                    data["user_limit"] = 0
-            return orig_vocal_update(self, guild, data)
-
-        VocalGuildChannel._update = _compat_vocal_update  # type: ignore[method-assign]
-
-        for ch_cls in (TextChannel, CategoryChannel, ForumChannel):
-            orig_ch_update = ch_cls._update
-
-            def _make_ch_update(orig_fn):
-                def _compat_ch_update(self, guild, data):
-                    if isinstance(data, dict) and data.get("position") is None:
-                        data = {**data, "position": 0}
-                    return orig_fn(self, guild, data)
-
-                return _compat_ch_update
-
-            ch_cls._update = _make_ch_update(orig_ch_update)  # type: ignore[method-assign]
-
-        # 3. BaseUser / Member: defensively default discriminator, avatar, roles, flags
-        from discord.member import Member
-        from discord.user import BaseUser
-
-        orig_user_update = BaseUser._update
-
-        def _compat_user_update(self, data):
-            if isinstance(data, dict):
-                data = {"discriminator": "0", "avatar": None, **data}
-            return orig_user_update(self, data)
-
-        BaseUser._update = _compat_user_update  # type: ignore[method-assign]
-
-        orig_member_init = Member.__init__
-
-        def _compat_member_init(self, *, data, guild, state):
-            if isinstance(data, dict):
-                data = {"roles": [], "flags": 0, **data}
-                if data.get("flags") is None:
-                    data["flags"] = 0
-                if data.get("roles") is None:
-                    data["roles"] = []
-            return orig_member_init(self, data=data, guild=guild, state=state)
-
-        Member.__init__ = _compat_member_init  # type: ignore[method-assign]
-
-        # 4. Message & Attachment: prevent KeyError AFTER an image is already posted (avoids duplicate retries!)
-        orig_msg_init = discord.Message.__init__
-
-        def _compat_msg_init(self, *, state, channel, data):
-            if isinstance(data, dict):
-                data = {"type": 0, "content": "", **data}
-                if data.get("content") is None:
-                    data["content"] = ""
-                if data.get("type") is None:
-                    data["type"] = 0
-            return orig_msg_init(self, state=state, channel=channel, data=data)
-
-        discord.Message.__init__ = _compat_msg_init  # type: ignore[method-assign]
-
-        orig_att_init = discord.Attachment.__init__
-
-        def _compat_att_init(self, *, data, state):
-            if isinstance(data, dict):
-                url_val = str(data.get("url") or "")
-                data = {
-                    "size": 0,
-                    "filename": "image.png",
-                    "url": url_val,
-                    "proxy_url": data.get("proxy_url") or url_val,
-                    **data,
-                }
-                if not data.get("proxy_url"):
-                    data["proxy_url"] = url_val
-            return orig_att_init(self, data=data, state=state)
-
-        discord.Attachment.__init__ = _compat_att_init  # type: ignore[method-assign]
-
-        # 5. READY payload: ensure resume_gateway_url & application.flags exist
-        from discord.state import ConnectionState
-
-        orig_parse_ready = ConnectionState.parse_ready
-
-        def _compat_parse_ready(self, data):
-            if isinstance(data, dict):
-                if not data.get("resume_gateway_url"):
-                    data = {**data, "resume_gateway_url": str(discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY)}
-                app = data.get("application")
-                if isinstance(app, dict) and app.get("flags") is None:
-                    data = {**data, "application": {**app, "flags": 0}}
-            return orig_parse_ready(self, data)
-
-        ConnectionState.parse_ready = _compat_parse_ready  # type: ignore[method-assign]
-
-        _GAMEVOX_PATCHED = True
-
-    logger.info(
-        "Patched discord.py endpoints -> REST={}, Gateway={}",
-        discord.http.Route.BASE,
-        discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY,
-    )
-
-
-class WoWSGameVoxBot(discord.Client):
+class WoWSDiscordBot(discord.Client):
     def __init__(
         self,
         *,
@@ -254,7 +105,7 @@ class WoWSGameVoxBot(discord.Client):
         return not self.is_closed() and self.is_ready()
 
     async def on_ready(self) -> None:
-        logger.info("GameVox bot logged in as {} (id={})", self.user, getattr(self.user, "id", None))
+        logger.info("Discord bot logged in as {} (id={})", self.user, getattr(self.user, "id", None))
         if self.user is not None:
             self._bot_mention_re = re.compile(rf"^<@!?{self.user.id}>\s*")
         if self.settings.default_guild_id and self.settings.default_auto_post_channel_id:
@@ -263,14 +114,30 @@ class WoWSGameVoxBot(discord.Client):
                 self.settings.default_auto_post_channel_id,
                 default_lang=self.settings.default_language,
             )
+            logger.info(
+                "Bound default Discord guild={} channel={} (restrict_to_bound_channel={})",
+                self.settings.default_guild_id,
+                self.settings.default_auto_post_channel_id,
+                self.settings.restrict_to_bound_channel,
+            )
         if not self._ready_once and self._on_ready_hook is not None:
             await self._on_ready_hook()
             self._ready_once = True
 
-    def _is_guild_admin(self, message: discord.Message) -> bool:
+    def is_admin_user_id(self, user_id: str) -> bool:
+        """Return True if `user_id` is explicitly listed in `ADMIN_USER_IDS`."""
+        return str(user_id) in self.settings.admin_user_id_set
+
+    def _is_admin(self, message: discord.Message) -> bool:
+        """Check bot admin permission.
+
+        When `ADMIN_USER_IDS` is configured, ONLY those user IDs are treated as admins
+        (Discord server owner/admin roles do not bypass this list). When `ADMIN_USER_IDS`
+        is empty, fall back to Discord guild administrator permissions.
+        """
         user_id = str(message.author.id)
-        if user_id in self.settings.admin_user_id_set:
-            return True
+        if self.settings.admin_user_id_set:
+            return user_id in self.settings.admin_user_id_set
         if message.guild is None:
             return False
         if message.guild.owner_id is not None and message.author.id == message.guild.owner_id:
@@ -279,6 +146,31 @@ class WoWSGameVoxBot(discord.Client):
             perms = message.author.guild_permissions
             return bool(perms.administrator or perms.manage_guild or perms.manage_channels)
         return False
+
+    def _get_bound_channel_id(self, guild_id: str | None) -> str | None:
+        if not guild_id:
+            return None
+        gs = self.repo.get_guild_settings(guild_id)
+        if gs and gs.get("auto_post_channel_id"):
+            return str(gs["auto_post_channel_id"])
+        if self.settings.default_guild_id and guild_id == self.settings.default_guild_id:
+            return self.settings.default_auto_post_channel_id
+        return None
+
+    def _should_accept_channel(self, message: discord.Message, first_token: str) -> bool:
+        """Enforce bound-channel restriction when enabled, while allowing admins to rebind."""
+        guild_id = str(message.guild.id) if message.guild else None
+        if not guild_id:
+            return True
+        if not self.settings.restrict_to_bound_channel:
+            return True
+        bound_channel_id = self._get_bound_channel_id(guild_id)
+        if not bound_channel_id:
+            return True
+        if str(message.channel.id) == str(bound_channel_id):
+            return True
+        # Allow explicit bot admins to rebind the channel from another channel
+        return first_token in _CHANNEL_BIND_CMDS and self._is_admin(message)
 
     def _check_cooldown(self, user_id: str) -> float:
         now = time.monotonic()
@@ -305,7 +197,7 @@ class WoWSGameVoxBot(discord.Client):
             await message.channel.send(content=content, file=file)
 
     async def deliver_image(self, channel_id: str, image_bytes: bytes, filename: str) -> str | None:
-        """Send a rendered PNG/JPEG stat card to a GameVox text channel."""
+        """Send a rendered PNG/JPEG stat card to a Discord text channel."""
         cid = int(channel_id)
         channel = self.get_channel(cid)
         if channel is None:
@@ -333,6 +225,10 @@ class WoWSGameVoxBot(discord.Client):
             return
 
         raw_args = content[len(prefix) :].strip()
+        first_token = raw_args.split()[0].lower() if raw_args.split() else ""
+        if not self._should_accept_channel(message, first_token):
+            return
+
         guild_id = str(message.guild.id) if message.guild else None
         user_id = str(message.author.id)
         lang = self.repo.resolve_language(
@@ -347,6 +243,14 @@ class WoWSGameVoxBot(discord.Client):
         if mention_match:
             mentioned_user_id = mention_match.group(1)
             raw_args = MENTION_RE.sub("", raw_args).strip()
+
+        logger.info(
+            "Command from user={} guild={} channel={} cmd={}",
+            user_id,
+            guild_id,
+            message.channel.id,
+            first_token or "help",
+        )
 
         try:
             await self._dispatch(message, raw_args, user_id, mentioned_user_id, guild_id, lang)
@@ -385,14 +289,14 @@ class WoWSGameVoxBot(discord.Client):
 
         cmd, rest = normalize_command_tokens(tokens)
 
-        # --- Language (personal for anyone; `server` requires guild admin) ---
+        # --- Language (personal for anyone; `server` requires bot admin) ---
         if cmd in ("lang", "language", "语言"):
             if not rest or rest[0].lower() not in ("zh", "en"):
                 await self._safe_reply(message, self.i18n.t("bot.lang_invalid", lang=lang))
                 return
             new_lang: Language = rest[0].lower()  # type: ignore[assignment]
             if len(rest) > 1 and rest[1].lower() in ("server", "guild", "服务器"):
-                if not self._is_guild_admin(message) or not guild_id:
+                if not self._is_admin(message) or not guild_id:
                     await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
                     return
                 self.repo.upsert_guild_settings(
@@ -404,9 +308,9 @@ class WoWSGameVoxBot(discord.Client):
             await self._safe_reply(message, self.i18n.t("bot.lang_set", lang=new_lang))
             return
 
-        # --- Set default auto-post channel (admin only) ---
-        if cmd in ("channel", "setchannel", "设置频道"):
-            if not guild_id or not self._is_guild_admin(message):
+        # --- Set bound / default auto-post channel (bot admin only) ---
+        if cmd in _CHANNEL_BIND_CMDS:
+            if not guild_id or not self._is_admin(message):
                 await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
                 return
             self.repo.upsert_guild_settings(
@@ -417,7 +321,7 @@ class WoWSGameVoxBot(discord.Client):
             await self._safe_reply(message, self.i18n.t("bot.channel_set", lang=lang))
             return
 
-        # --- Bind account (always binds caller's own GameVox user_id) ---
+        # --- Bind account (always binds caller's own Discord user_id) ---
         if cmd in ("bind", "绑定"):
             if len(rest) < 2:
                 await self._safe_reply(message, self.i18n.t("bot.bind_missing_args", lang=lang, prefix=prefix))
@@ -444,17 +348,10 @@ class WoWSGameVoxBot(discord.Client):
 
             aid = int(chosen["account_id"])
             real_nick = str(chosen["nickname"])
-            gs = self.repo.get_guild_settings(guild_id) if guild_id else None
-            # Only apply deployment-wide default channel when guild matches default_guild_id!
-            default_ch = (
-                self.settings.default_auto_post_channel_id
-                if guild_id and guild_id == self.settings.default_guild_id
-                else None
-            )
-            auto_ch = (gs["auto_post_channel_id"] if gs else None) or default_ch
+            auto_ch = self._get_bound_channel_id(guild_id)
 
             self.repo.bind_account(
-                gamevox_user_id=user_id,
+                discord_user_id=user_id,
                 realm=realm,
                 account_id=aid,
                 nickname=real_nick,
@@ -477,9 +374,9 @@ class WoWSGameVoxBot(discord.Client):
             )
             return
 
-        # --- Toggle auto-post tracking (cross-user requires guild admin) ---
+        # --- Toggle auto-post tracking (cross-user requires bot admin) ---
         if cmd in ("track", "追踪", "推送"):
-            if mentioned_user_id and mentioned_user_id != user_id and not self._is_guild_admin(message):
+            if mentioned_user_id and mentioned_user_id != user_id and not self._is_admin(message):
                 await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
                 return
             target_uid = mentioned_user_id or user_id
@@ -489,14 +386,12 @@ class WoWSGameVoxBot(discord.Client):
                 return
             enabled = not (rest and rest[0].lower() in ("off", "0", "false", "关", "关闭"))
             if guild_id:
-                # Non-admins can only toggle tracking in the guild's designated auto-post channel (if set)
-                gs = self.repo.get_guild_settings(guild_id)
-                designated_ch = gs["auto_post_channel_id"] if gs else None
+                designated_ch = self._get_bound_channel_id(guild_id)
                 if (
                     enabled
                     and designated_ch
                     and str(message.channel.id) != str(designated_ch)
-                    and not self._is_guild_admin(message)
+                    and not self._is_admin(message)
                 ):
                     await self._safe_reply(message, self.i18n.t("bot.permission_denied", lang=lang))
                     return

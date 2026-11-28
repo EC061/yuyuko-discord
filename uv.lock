@@ -547,8 +547,8 @@ wheels = [
 ]
 
 [[package]]
-name = "wows-gamevox-bot"
-version = "0.2.0"
+name = "wows-discord-bot"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "discord-py" },

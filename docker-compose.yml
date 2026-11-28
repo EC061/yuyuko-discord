@@ -1,12 +1,12 @@
 # 1Panel-compatible Docker Compose template
-# Paste this into 1Panel -> Containers -> Compose, and set GAMEVOX_BOT_TOKEN & WG_APPLICATION_ID
-# (plus optional DEFAULT_GUILD_ID / DEFAULT_AUTO_POST_CHANNEL_ID / ADMIN_USER_IDS)
+# Paste this into 1Panel -> Containers -> Compose, and set DISCORD_BOT_TOKEN & WG_APPLICATION_ID
+# (plus DEFAULT_GUILD_ID / DEFAULT_AUTO_POST_CHANNEL_ID / ADMIN_USER_IDS)
 # in 1Panel's built-in "环境变量" box.
 
 services:
-  wows-gamevox-bot:
+  wows-discord-bot:
     image: ghcr.io/ec061/yuyuko-discord:${IMAGE_TAG:-latest}
-    container_name: wows-gamevox-bot
+    container_name: wows-discord-bot
     restart: unless-stopped
     init: true
     shm_size: "512m"
@@ -14,13 +14,12 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      GAMEVOX_BOT_TOKEN: ${GAMEVOX_BOT_TOKEN}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
       WG_APPLICATION_ID: ${WG_APPLICATION_ID}
-      GAMEVOX_API_BASE: ${GAMEVOX_API_BASE:-https://app-api.gamevox.com/api/v10}
-      GAMEVOX_GATEWAY_URL: ${GAMEVOX_GATEWAY_URL:-wss://gateway.gamevox.com/?v=10&encoding=json}
-      DEFAULT_GUILD_ID: ${DEFAULT_GUILD_ID:-}
-      DEFAULT_AUTO_POST_CHANNEL_ID: ${DEFAULT_AUTO_POST_CHANNEL_ID:-}
-      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      DEFAULT_GUILD_ID: ${DEFAULT_GUILD_ID:-815711272262828063}
+      DEFAULT_AUTO_POST_CHANNEL_ID: ${DEFAULT_AUTO_POST_CHANNEL_ID:-1576054680713166848}
+      RESTRICT_TO_BOUND_CHANNEL: ${RESTRICT_TO_BOUND_CHANNEL:-true}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-363790401582268416}
       DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-zh}
       DEFAULT_REALM: ${DEFAULT_REALM:-na}
       COMMAND_PREFIX: ${COMMAND_PREFIX:-wws}

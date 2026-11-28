@@ -1,1 +1,1 @@
-"""GameVox (Discord API v10 compatible) bot client and command handlers."""
+"""Native Discord API v10 bot client and command handlers."""
